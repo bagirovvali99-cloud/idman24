@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: idman24
+    runtime: python
+    plan: free
+    buildCommand: "echo no build needed"
+    startCommand: "python idman24_server.py"
+    envVars:
+      - key: IDMAN24_ADMIN
+        value: Baku1234

@@ -1,0 +1,2 @@
+# İdman24 yalnız Python standart kitabxanasından istifadə edir — əlavə paket lazım deyil.
+# Bu fayl hostinqin (Render/Railway) Python layihəsini tanıması üçündür.
