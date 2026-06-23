@@ -452,6 +452,54 @@ def rss_xml():
     parts.append("</channel></rss>")
     return "".join(parts)
 
+# ---- SEO: hər məqalə üçün ayrıca səhifə + sitemap ----
+def find_article(aid):
+    for it in load_manual():
+        if it.get("id") == aid:
+            return it
+    with _lock:
+        for it in list(LIVE):
+            if it.get("id") == aid:
+                return it
+    return None
+
+def article_page(it, body, img):
+    title = html.escape(it.get("title", ""))
+    desc = html.escape((it.get("summary") or body or "")[:200])
+    image = html.escape(img or "https://idman24.com/icon.svg")
+    url = "https://idman24.com/xeber/" + html.escape(it.get("id", ""))
+    cat = html.escape(it.get("category", "")); src = html.escape(it.get("source", ""))
+    link = html.escape(it.get("link", ""))
+    paras = "".join("<p>%s</p>" % html.escape(p) for p in (body or it.get("summary", "")).split("\n") if p.strip())
+    img_tag = ('<img class="h" src="%s" alt="">' % image) if img else ""
+    src_link = ('<a class="cta" href="%s" target="_blank" rel="noopener">Orijinal mənbə</a>' % link) if link else ""
+    return ('<!DOCTYPE html><html lang="az"><head><meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<title>' + title + ' - İdman24</title>'
+        '<meta name="description" content="' + desc + '">'
+        '<meta property="og:type" content="article"><meta property="og:title" content="' + title + '">'
+        '<meta property="og:description" content="' + desc + '"><meta property="og:image" content="' + image + '">'
+        '<meta property="og:url" content="' + url + '"><meta property="og:site_name" content="İdman24">'
+        '<meta name="twitter:card" content="summary_large_image"><link rel="canonical" href="' + url + '">'
+        '<style>body{margin:0;background:#0a0e17;color:#eaf0fb;font-family:system-ui,Segoe UI,Arial,sans-serif;line-height:1.7}'
+        'a{color:#00e6a8;text-decoration:none}header{border-bottom:1px solid #22304d;padding:14px 20px;font-weight:800;font-size:22px}'
+        'header span{color:#00e6a8}.w{max-width:720px;margin:0 auto;padding:20px}img.h{width:100%;border-radius:14px;margin:14px 0}'
+        'h1{font-size:28px;line-height:1.25}.m{color:#8da2c5;font-size:13px;margin-bottom:10px}.b p{color:#c5d3ec;font-size:16px}'
+        '.cta{display:inline-block;margin-top:18px;background:#00e6a8;color:#04231a;padding:11px 20px;border-radius:10px;font-weight:700}</style></head>'
+        '<body><header><a href="/"><span>İdman</span>24</a></header>'
+        '<article class="w"><div class="m">' + cat + ' &middot; ' + src + '</div><h1>' + title + '</h1>'
+        + img_tag + '<div class="b">' + paras + '</div>' + src_link +
+        '<p style="margin-top:24px"><a href="/">İdman24 əsas səhifə</a></p></article></body></html>')
+
+def sitemap_xml():
+    with _lock:
+        items = (load_manual() + list(LIVE))[:300]
+    urls = ['<url><loc>https://idman24.com/</loc></url>']
+    for it in items:
+        urls.append("<url><loc>https://idman24.com/xeber/%s</loc></url>" % html.escape(it.get("id", "")))
+    return ('<?xml version="1.0" encoding="UTF-8"?>'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + "".join(urls) + '</urlset>')
+
 # ---- Əlaqə mesajları ----
 _ctlock = threading.Lock()
 CONTACTS = []
@@ -719,6 +767,20 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, AD)
         if u.path == "/rss.xml":
             return self._send(200, rss_xml(), "application/rss+xml; charset=utf-8")
+        if u.path == "/sitemap.xml":
+            return self._send(200, sitemap_xml(), "application/xml; charset=utf-8")
+        if u.path == "/robots.txt":
+            return self._send(200, "User-agent: *\nAllow: /\nSitemap: https://idman24.com/sitemap.xml\n",
+                              "text/plain; charset=utf-8")
+        if u.path.startswith("/xeber/"):
+            aid = u.path.split("/xeber/", 1)[1].strip("/")
+            it = find_article(aid)
+            if not it:
+                self.send_response(302); self.send_header("Location", "/"); self.end_headers(); return
+            body, img = it.get("body", ""), it.get("image", "")
+            if not it.get("manual") and it.get("link") and (not body or not img):
+                e = enrich(it["link"]); body = body or e.get("body", ""); img = img or e.get("image", "")
+            return self._send(200, article_page(it, body, img), "text/html; charset=utf-8")
         if u.path == "/manifest.json":
             return self._send(200, {"name": "İdman24", "short_name": "İdman24",
                 "start_url": "/", "display": "standalone", "background_color": "#0a0e17",
@@ -1220,7 +1282,7 @@ async function openModal(id){const a=find(id);if(!a)return;CUR=a;a._tshown=false
 function closeModal(){document.getElementById("modal").classList.remove("open");}
 function izToast(m){const t=document.createElement("div");t.className="iz-toast";t.textContent=m;document.body.appendChild(t);setTimeout(()=>t.remove(),2200);}
 function trackArticle(a,type){if(!a)return;try{fetch("/api/track",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:a.id,type,title:a.title})});}catch(e){}}
-function articleLink(a){return location.origin+location.pathname+"#a="+encodeURIComponent(a.id);}
+function articleLink(a){return location.origin+"/xeber/"+encodeURIComponent(a.id);}
 function shareArticle(){const a=CUR;if(!a)return;trackArticle(a,"share");const url=articleLink(a);const title=a.title||"İdman24";
   if(navigator.share){navigator.share({title,url}).catch(()=>{});}
   else if(navigator.clipboard){navigator.clipboard.writeText(url).then(()=>izToast("Keçid kopyalandı: "+url)).catch(()=>izToast(url));}
