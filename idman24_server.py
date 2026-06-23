@@ -451,6 +451,33 @@ def save_poll():
         print("[save_poll]", e)
 
 # ============ Cüdo canlı nəticələr (IJF JudoBase açıq API) ============
+# IOC (3 hərf) -> ISO-3166 alpha-2 (bayraq şəkilləri üçün)
+_IOC2ISO = {
+ "AFG":"af","ALB":"al","ALG":"dz","AND":"ad","ANG":"ao","ARG":"ar","ARM":"am","ARU":"aw","AUS":"au","AUT":"at",
+ "AZE":"az","BAH":"bs","BAN":"bd","BAR":"bb","BDI":"bi","BEL":"be","BEN":"bj","BER":"bm","BHU":"bt","BIH":"ba",
+ "BLR":"by","BOL":"bo","BOT":"bw","BRA":"br","BRN":"bh","BRU":"bn","BUL":"bg","BUR":"bf","CAF":"cf","CAM":"kh",
+ "CAN":"ca","CAY":"ky","CGO":"cg","CHA":"td","CHI":"cl","CHN":"cn","CIV":"ci","CMR":"cm","COD":"cd","COK":"ck",
+ "COL":"co","COM":"km","CPV":"cv","CRC":"cr","CRO":"hr","CUB":"cu","CYP":"cy","CZE":"cz","DEN":"dk","DJI":"dj",
+ "DMA":"dm","DOM":"do","ECU":"ec","EGY":"eg","ERI":"er","ESA":"sv","ESP":"es","EST":"ee","ETH":"et","FIJ":"fj",
+ "FIN":"fi","FRA":"fr","FSM":"fm","GAB":"ga","GAM":"gm","GBR":"gb","GBS":"gw","GEO":"ge","GEQ":"gq","GER":"de",
+ "GHA":"gh","GRE":"gr","GRN":"gd","GUA":"gt","GUI":"gn","GUM":"gu","GUY":"gy","HAI":"ht","HKG":"hk","HON":"hn",
+ "HUN":"hu","INA":"id","IND":"in","IRI":"ir","IRL":"ie","IRQ":"iq","ISL":"is","ISR":"il","ISV":"vi","ITA":"it",
+ "IVB":"vg","JAM":"jm","JOR":"jo","JPN":"jp","KAZ":"kz","KEN":"ke","KGZ":"kg","KIR":"ki","KOR":"kr","KOS":"xk",
+ "KSA":"sa","KUW":"kw","LAO":"la","LAT":"lv","LBA":"ly","LBN":"lb","LBR":"lr","LCA":"lc","LES":"ls","LIE":"li",
+ "LTU":"lt","LUX":"lu","MAD":"mg","MAR":"ma","MAS":"my","MAW":"mw","MDA":"md","MDV":"mv","MEX":"mx","MGL":"mn",
+ "MKD":"mk","MLI":"ml","MLT":"mt","MNE":"me","MON":"mc","MOZ":"mz","MRI":"mu","MTN":"mr","MYA":"mm","NAM":"na",
+ "NCA":"ni","NED":"nl","NEP":"np","NGR":"ng","NIG":"ne","NOR":"no","NRU":"nr","NZL":"nz","OMA":"om","PAK":"pk",
+ "PAN":"pa","PAR":"py","PER":"pe","PHI":"ph","PLE":"ps","PLW":"pw","PNG":"pg","POL":"pl","POR":"pt","PRK":"kp",
+ "PUR":"pr","QAT":"qa","ROU":"ro","RSA":"za","RUS":"ru","RWA":"rw","SAM":"ws","SEN":"sn","SEY":"sc","SGP":"sg",
+ "SKN":"kn","SLE":"sl","SLO":"si","SMR":"sm","SOL":"sb","SOM":"so","SRB":"rs","SRI":"lk","SSD":"ss","STP":"st",
+ "SUD":"sd","SUI":"ch","SUR":"sr","SVK":"sk","SWE":"se","SWZ":"sz","SYR":"sy","TAN":"tz","TGA":"to","THA":"th",
+ "TJK":"tj","TKM":"tm","TLS":"tl","TOG":"tg","TPE":"tw","TTO":"tt","TUN":"tn","TUR":"tr","TUV":"tv","UAE":"ae",
+ "UGA":"ug","UKR":"ua","URU":"uy","USA":"us","UZB":"uz","VAN":"vu","VEN":"ve","VIE":"vn","VIN":"vc","YEM":"ye",
+ "ZAM":"zm","ZIM":"zw"}
+
+def _iso2(short):
+    return _IOC2ISO.get((short or "").strip().upper(), "")
+
 IJF_BASE = "https://data.ijf.org/api/get_json"
 _ijf_cache = {}   # key -> (ts, data)
 
@@ -551,8 +578,10 @@ def judo_contests(cid, wid):
             return "%s-%s" % (c.get("ippon_" + p) or 0, c.get("waza_" + p) or 0)
         # Qalibi bəlli olan görüş bitmiş sayılır (köhnə yarışlarda yanlış "canlı" işığı olmasın)
         finished = str(c.get("is_finished")) in ("1", "true", "True") or bool(winner)
-        out.append({"white": c.get("person_white") or "", "cw": c.get("country_white") or "",
-                    "blue": c.get("person_blue") or "", "cb": c.get("country_blue") or "",
+        out.append({"white": c.get("person_white") or "", "cw": c.get("country_short_white") or "",
+                    "cwn": c.get("country_white") or "", "fw": _iso2(c.get("country_short_white")),
+                    "blue": c.get("person_blue") or "", "cb": c.get("country_short_blue") or "",
+                    "cbn": c.get("country_blue") or "", "fb": _iso2(c.get("country_short_blue")),
                     "sw": sc("w"), "sb": sc("b"),
                     "shidow": c.get("penalty_w") or 0, "shidob": c.get("penalty_b") or 0,
                     "winner": winner, "finished": finished,
@@ -1365,6 +1394,23 @@ main{max-width:1240px;margin:0 auto;padding:24px 20px 60px}
 .caldate small{display:block;font-size:9px;color:var(--muted);font-weight:600}
 .backbtn{background:var(--card);border:1px solid var(--line);color:var(--txt);padding:8px 16px;border-radius:9px;cursor:pointer;font-size:13.5px;font-weight:600;margin-bottom:16px}
 .backbtn:hover{border-color:var(--accent);color:var(--accent)}
+.totop{position:fixed;right:20px;bottom:22px;width:46px;height:46px;border-radius:50%;border:none;background:var(--accent);color:#04231a;font-size:22px;font-weight:800;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.4);opacity:0;pointer-events:none;transform:translateY(12px);transition:.25s;z-index:60}
+.totop.show{opacity:1;pointer-events:auto;transform:none}
+.morebtn{background:var(--card);border:1px solid var(--accent);color:var(--accent);padding:12px 28px;border-radius:30px;cursor:pointer;font-size:14.5px;font-weight:700}
+.morebtn:hover{background:var(--accent);color:#04231a}
+.widgets{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+@media(max-width:760px){.widgets{grid-template-columns:1fr}}
+.widget{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+.widget h3{margin:0 0 12px;font-size:15px}
+.wchips{display:flex;flex-wrap:wrap;gap:8px}
+.wchip{background:#0d1525;border:1px solid var(--line);color:var(--txt);padding:7px 13px;border-radius:30px;cursor:pointer;font-size:13px}
+.wchip:hover{border-color:var(--accent);color:var(--accent)}
+.wrow{display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.wrow:last-child{border-bottom:none}
+.wrow:hover .wt{color:var(--accent)}
+.wn{min-width:20px;height:20px;display:flex;align-items:center;justify-content:center;background:var(--accent);color:#04231a;border-radius:6px;font-size:12px;font-weight:800;flex:0 0 auto}
+.wdate{min-width:42px;text-align:center;background:#0d1525;border:1px solid var(--line);border-radius:7px;padding:4px 2px;font-size:12px;font-weight:700;color:var(--accent);flex:0 0 auto}
+.wt{font-size:13px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .cudolow{display:grid;grid-template-columns:1fr 300px;gap:18px;align-items:start;margin-top:4px}
 .cudonews{min-width:0}
 #judoResults{max-height:430px;overflow:auto;padding-right:4px}
@@ -1378,7 +1424,9 @@ main{max-width:1240px;margin:0 auto;padding:24px 20px 60px}
 .vtoggle button{background:#0d1525;border:1px solid var(--line);color:var(--muted);font-size:11.5px;padding:5px 11px;border-radius:7px;cursor:pointer}
 .vtoggle button.von{background:var(--accent);color:#04231a;border-color:var(--accent);font-weight:700}
 .bracket{display:flex;gap:10px;overflow-x:auto;padding-bottom:8px;align-items:stretch}
-.bcol{width:150px;flex:0 0 150px;display:flex;flex-direction:column}
+.bcol{width:166px;flex:0 0 166px;display:flex;flex-direction:column}
+.flag{width:18px;height:13px;object-fit:cover;border-radius:2px;flex:0 0 auto;box-shadow:0 0 0 1px rgba(0,0,0,.3)}
+.cc{color:var(--muted);font-size:9.5px;flex:0 0 auto}
 .bcol h4{margin:0 0 8px;font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent);text-align:center;padding-bottom:5px;border-bottom:1px solid var(--line)}
 .bextra h4{color:var(--accent2)}
 .bmatches{flex:1;display:flex;flex-direction:column;justify-content:space-around;gap:9px}
@@ -1448,6 +1496,7 @@ footer{border-top:1px solid var(--line);text-align:center;padding:26px;color:var
   <div id="content"><div class="loader"><div class="spin"></div><div style="color:var(--muted)">Canlı xəbərlər gətirilir...</div></div></div>
 </main>
 <footer>İdman24 — Azərbaycan dilində canlı idman xəbərləri<br>Mənbələr: APA Sport, İdman Xəbər, Report · Xəbərlər birbaşa mənbə saytlardan gətirilir.</footer>
+<button id="toTop" class="totop" title="Yuxarı qalx" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑</button>
 <div class="modal" id="modal" onclick="if(event.target===this)closeModal()"><div class="modal-box" id="modalBox"></div></div>
 <div class="modal" id="adminModal" onclick="if(event.target===this)closeAdmin()"><div class="modal-box"><div id="adminInner"></div></div></div>
 <div class="dash" id="dash"><aside class="dashnav" id="dashNav"></aside><main class="dashmain" id="dashMain"></main></div>
@@ -1498,11 +1547,30 @@ function render(){if(CURRENT==="Əlaqə"){document.getElementById("hero").innerH
     const trend=[...ALL].filter(x=>x.views>0).sort((a,b)=>b.views-a.views).slice(0,5);
     if(trend.length>=3){prefix+=`<div class="section-h"><h2>🔥 Ən çox oxunan</h2></div><div class="trend">${trend.map((i,n)=>`<div class="tcard" onclick='openModal("${i.id}")'><span class="tnum">${n+1}</span><div><div class="tt">${esc(i.title)}</div><small style="color:var(--muted)">${esc(i.source)} · 👁 ${i.views}</small></div></div>`).join("")}</div>`;}
   }
+  const shown=rest.slice(0,SHOWN);
+  const moreBtn=rest.length>SHOWN?`<div style="text-align:center;margin:22px 0"><button class="morebtn" onclick="showMore()">Daha çox xəbər göstər (${rest.length-SHOWN})</button></div>`:"";
+  const widgets=(CURRENT==="Hamısı"&&!SEARCH)?widgetsHtml():"";
   content.innerHTML=prefix+`<div class="section-h"><h2>${secTitle}</h2></div>
-    <div class="grid">${rest.map(i=>`<div class="card" onclick='openModal("${i.id}")'>
-      <div class="thumb ${i.image?'':'no-img'}" ${i.image?`style="background-image:url('${esc(i.image)}')"`:''}><span class="tag">${badge(i)}</span></div>
-      <div class="c-body"><h3>${esc(i.title)}</h3>${i.summary?`<p>${esc(i.summary)}</p>`:""}
-        <div class="foot"><span style="color:var(--accent)">${esc(i.source)}</span><span>${i.views?`👁 ${i.views} · `:""}${fmtTime(i.date)}</span></div></div></div>`).join("")}</div>`;}
+    <div class="grid">${shown.map(i=>cardHtml(i)).join("")}</div>`+moreBtn+widgets;
+  if(CURRENT==="Hamısı"&&!SEARCH)loadWidgetJudo();}
+function widgetsHtml(){
+  const cats=CATS.filter(c=>c!=="Hamısı"&&c!=="Digər");
+  const chips=cats.map(c=>`<button class="wchip" onclick="selectCat('${c}')">${esc(c)}</button>`).join("")
+    +`<button class="wchip" onclick="selectCat('⭐ Mənim')">⭐ Mənim lentim</button>`;
+  const top=[...ALL].filter(x=>x.views>0).sort((a,b)=>b.views-a.views).slice(0,5);
+  const topHtml=top.length?top.map((i,n)=>`<div class="wrow" onclick='openModal("${i.id}")'><span class="wn">${n+1}</span><span class="wt">${esc(i.title)}</span></div>`).join(""):'<p style="color:var(--muted);font-size:13px">Hələ statistika toplanır.</p>';
+  return `<div class="section-h" style="margin-top:34px"><h2>Faydalı</h2></div>
+   <div class="widgets">
+     <div class="widget"><h3>🏆 İdman fənləri</h3><div class="wchips">${chips}</div></div>
+     <div class="widget"><h3>🥋 Yaxınlaşan cüdo yarışları</h3><div id="wJudo"><div class="loader" style="padding:14px"><div class="spin"></div></div></div></div>
+     <div class="widget"><h3>🔥 Ən çox oxunan</h3>${topHtml}</div>
+   </div>`;}
+async function loadWidgetJudo(){const box=document.getElementById("wJudo");if(!box)return;
+  let items=[];try{items=((await (await fetch("/api/judo/calendar?age=all")).json()).items)||[];}catch(e){}
+  if(!box.isConnected)return;
+  box.innerHTML=items.length?items.slice(0,5).map(c=>{const d=(c.date_from||"").split("/");const dd=d.length===3?`${d[2]}.${d[1]}`:"";
+    return `<div class="wrow" onclick="selectCat('Cüdo')"><span class="wdate">${dd}</span><span class="wt">${esc(c.name)}</span></div>`;}).join("")
+    :'<p style="color:var(--muted);font-size:13px">Yaxın yarış tapılmadı.</p>';}
 function cardHtml(i){return `<div class="card" onclick='openModal("${i.id}")'>
   <div class="thumb ${i.image?'':'no-img'}" ${i.image?`style="background-image:url('${esc(i.image)}')"`:''}><span class="tag">${badge(i)}</span></div>
   <div class="c-body"><h3>${esc(i.title)}</h3>${i.summary?`<p>${esc(i.summary)}</p>`:""}
@@ -1539,7 +1607,7 @@ let JCAL={age:"all"};
 function judoPanelHtml(){return `<div class="judopanel">
    <div class="jph"><div><h2>🥋 Canlı nəticələr</h2> <span class="jphs">IJF JudoBase</span></div>
      <div class="vtoggle"><button id="vBr" class="${JUDO.view!=='list'?'von':''}" onclick="judoSetView('bracket')">Cədvəl</button><button id="vLi" class="${JUDO.view==='list'?'von':''}" onclick="judoSetView('list')">Siyahı</button></div></div>
-   <p style="color:var(--muted);margin:8px 0 12px;font-size:13.5px">Yarışı və çəki dərəcəsini seçin — finala qədər şəbəkə (draw) görünür, canlı görüşlər hər 30 saniyədə yenilənir.</p>
+   <p style="color:var(--muted);margin:8px 0 12px;font-size:13.5px">Yarışı və çəki dərəcəsini seçin — finala qədər şəbəkə (draw) görünür, canlı görüşlər hər 10 dəqiqədən bir yenilənir.</p>
    <div class="judosel">
      <select id="judoComp" onchange="judoPickComp()"><option>Yüklənir...</option></select>
      <select id="judoWeight" onchange="judoPickWeight()"><option>—</option></select>
@@ -1576,13 +1644,18 @@ async function judoInit(){
   const sel=document.getElementById("judoComp");if(!sel)return;
   if(!JUDO.comps.length){sel.innerHTML='<option>Məlumat yoxdur</option>';document.getElementById("judoResults").innerHTML='<p style="color:var(--muted)">Hazırda nəticə məlumatı əlçatan deyil.</p>';return;}
   sel.innerHTML=JUDO.comps.map(c=>`<option value="${c.id}">${c.live?'🔴 ':''}${esc(c.name)}${c.city?' — '+esc(c.city):''}</option>`).join("");
-  JUDO.cid=JUDO.comps[0].id;sel.value=JUDO.cid;await judoLoadCats();}
+  // Çəki dərəcələri olan ilk yarışı default seç (canlı/yeni yarışlarda hələ çəkilər boş ola bilər)
+  for(let i=0;i<Math.min(JUDO.comps.length,8);i++){
+    if(CURRENT!=="Cüdo")return;
+    JUDO.cid=JUDO.comps[i].id;sel.value=JUDO.cid;
+    if(await judoLoadCats())return;
+  }}
 async function judoPickComp(){JUDO.cid=document.getElementById("judoComp").value;await judoLoadCats();}
-async function judoLoadCats(){const w=document.getElementById("judoWeight");if(!w)return;w.innerHTML='<option>...</option>';
+async function judoLoadCats(){const w=document.getElementById("judoWeight");if(!w)return false;w.innerHTML='<option>...</option>';
   try{JUDO.cats=((await (await fetch("/api/judo/categories?comp="+encodeURIComponent(JUDO.cid))).json()).items)||[];}catch(e){JUDO.cats=[];}
-  if(!JUDO.cats.length){w.innerHTML='<option>—</option>';document.getElementById("judoResults").innerHTML='<p style="color:var(--muted)">Bu yarış üçün çəki məlumatı yoxdur.</p>';return;}
+  if(!JUDO.cats.length){w.innerHTML='<option>—</option>';document.getElementById("judoResults").innerHTML='<p style="color:var(--muted)">Bu yarış üçün çəki məlumatı yoxdur.</p>';return false;}
   w.innerHTML=JUDO.cats.map(c=>`<option value="${c.id}">${c.gender==='f'?'Qadın':'Kişi'} ${esc(c.label)} kq</option>`).join("");
-  JUDO.wid=JUDO.cats[0].id;w.value=JUDO.wid;await judoLoadContests();}
+  JUDO.wid=JUDO.cats[0].id;w.value=JUDO.wid;await judoLoadContests();return true;}
 async function judoPickWeight(){JUDO.wid=document.getElementById("judoWeight").value;await judoLoadContests();}
 async function judoLoadContests(){const box=document.getElementById("judoResults");if(!box)return;
   if(JUDO.t){clearTimeout(JUDO.t);JUDO.t=null;}
@@ -1590,7 +1663,7 @@ async function judoLoadContests(){const box=document.getElementById("judoResults
   let items=[];try{items=((await (await fetch(`/api/judo/contests?comp=${encodeURIComponent(JUDO.cid)}&weight=${encodeURIComponent(JUDO.wid)}`)).json()).items)||[];}catch(e){}
   if(CURRENT!=="Cüdo")return;
   JUDO.items=items;judoRenderResults();
-  if(items.some(x=>!x.finished)){JUDO.t=setTimeout(()=>{if(CURRENT==="Cüdo")judoLoadContests();},30000);}}
+  if(items.some(x=>!x.finished)){JUDO.t=setTimeout(()=>{if(CURRENT==="Cüdo")judoLoadContests();},600000);}}
 function judoRenderResults(){const box=document.getElementById("judoResults");if(!box)return;
   const items=JUDO.items||[];
   if(!items.length){box.innerHTML='<p style="color:var(--muted)">Bu çəkidə hələ görüş yoxdur.</p>';return;}
@@ -1608,10 +1681,11 @@ function shortName(n){n=(n||"").trim();if(!n)return"—";const t=n.split(/\s+/);
   const given=t.filter(x=>x!==sur).join(" ").trim();
   const tc=sur.charAt(0).toUpperCase()+sur.slice(1).toLowerCase();
   return given?`${tc} ${given[0].toUpperCase()}.`:tc;}
+function flagImg(iso,code,name){return iso?`<img class="flag" src="https://flagcdn.com/h20/${iso}.png" alt="${esc(code||'')}" title="${esc(name||code||'')}" loading="lazy">`:(code?`<small class="cc">${esc(code)}</small>`:"");}
 function bMatch(c){const live=!c.finished;
   return `<div class="bmatch ${live?'blive':''}">
-    <div class="brow ${c.winner==='w'?'bwin':''}"><span><i class="gi w"></i><span class="bnm" title="${esc(c.white||'')}">${esc(shortName(c.white))}</span>${c.cw?` <small>${esc(c.cw)}</small>`:''}</span><b>${esc(c.sw)}</b></div>
-    <div class="brow ${c.winner==='b'?'bwin':''}"><span><i class="gi b"></i><span class="bnm" title="${esc(c.blue||'')}">${esc(shortName(c.blue))}</span>${c.cb?` <small>${esc(c.cb)}</small>`:''}</span><b>${esc(c.sb)}</b></div>
+    <div class="brow ${c.winner==='w'?'bwin':''}"><span>${flagImg(c.fw,c.cw,c.cwn)}<span class="bnm" title="${esc(c.white||'')}">${esc(shortName(c.white))}</span></span><b>${esc(c.sw)}</b></div>
+    <div class="brow ${c.winner==='b'?'bwin':''}"><span>${flagImg(c.fb,c.cb,c.cbn)}<span class="bnm" title="${esc(c.blue||'')}">${esc(shortName(c.blue))}</span></span><b>${esc(c.sb)}</b></div>
     ${live?'<span class="blivebadge">CANLI</span>':''}</div>`;}
 function bracketHtml(items){const g={};items.forEach(c=>{const k=roundKey(c.round);(g[k]=g[k]||[]).push(c);});
   const order=["r64","r32","r16","qf","sf","final","rep","bronze","other"];
@@ -1620,12 +1694,12 @@ function bracketHtml(items){const g={};items.forEach(c=>{const k=roundKey(c.roun
     h+=`<div class="bcol ${ex}"><h4>${RLAB[k]}</h4><div class="bmatches">${g[k].map(bMatch).join("")}</div></div>`;});
   h+='</div>';
   return any?h:'<p style="color:var(--muted)">Cədvəl məlumatı yoxdur.</p>';}
-function judoSide(name,country,score,win,shido,color){return `<div class="js ${win?'jwin':''}"><span class="jn"><i class="gi ${color}"></i>${esc(name||'—')}${country?` <small>${esc(country)}</small>`:''}</span><span class="jsc">${esc(score)}${shido?` <i class="shi">${shido}</i>`:''}</span></div>`;}
+function judoSide(name,iso,code,cname,score,win,shido,color){return `<div class="js ${win?'jwin':''}"><span class="jn"><i class="gi ${color}"></i>${flagImg(iso,code,cname)}${esc(name||'—')}</span><span class="jsc">${esc(score)}${shido?` <i class="shi">${shido}</i>`:''}</span></div>`;}
 function judoRow(c){const live=!c.finished;
   return `<div class="jrow ${live?'jlivebox':''}"><div class="jmeta">${live?'<span class="jlive">CANLI</span>':''}${c.round?`<span>${esc(c.round)}</span>`:''}${c.gs?'<span>Qızıl Hesab</span>':''}</div>
-    ${judoSide(c.white,c.cw,c.sw,c.winner==='w',c.shidow,'w')}
+    ${judoSide(c.white,c.fw,c.cw,c.cwn,c.sw,c.winner==='w',c.shidow,'w')}
     <div class="jvs">VS</div>
-    ${judoSide(c.blue,c.cb,c.sb,c.winner==='b',c.shidob,'b')}</div>`;}
+    ${judoSide(c.blue,c.fb,c.cb,c.cbn,c.sb,c.winner==='b',c.shidob,'b')}</div>`;}
 function find(id){return ALL.find(i=>i.id===id);}
 function relatedHtml(a){const rel=ALL.filter(x=>x.category===a.category&&x.id!==a.id).slice(0,4);
   if(!rel.length)return"";
@@ -1933,8 +2007,10 @@ function renderMyList(){const mine=ALL.filter(i=>i.manual);
 async function pinArticle(id){await fetch("/api/article/pin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:PW,id})});await load();renderMyList();}
 async function delArticle(id){if(!confirm("Silinsin?"))return;
   await fetch("/api/article/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:PW,id})});await load();renderMyList();}
-function selectCat(c){CURRENT=c;SEARCH="";if(c!=="⭐ Mənim")FAV_EDIT=false;if(c!=="Cüdo"&&JUDO.t){clearTimeout(JUDO.t);JUDO.t=null;}document.getElementById("q").value="";window.scrollTo({top:0,behavior:"smooth"});buildTabs();render();buildTicker();}
-let st;function onSearch(){SEARCH=document.getElementById("q").value;clearTimeout(st);st=setTimeout(()=>{render();buildTicker();},250);}
+function selectCat(c){CURRENT=c;SEARCH="";SHOWN=18;if(c!=="⭐ Mənim")FAV_EDIT=false;if(c!=="Cüdo"&&JUDO.t){clearTimeout(JUDO.t);JUDO.t=null;}document.getElementById("q").value="";window.scrollTo({top:0,behavior:"smooth"});buildTabs();render();buildTicker();}
+let st;function onSearch(){SEARCH=document.getElementById("q").value;SHOWN=18;clearTimeout(st);st=setTimeout(()=>{render();buildTicker();},250);}
+let SHOWN=18;function showMore(){SHOWN+=18;render();}
+window.addEventListener("scroll",()=>{const b=document.getElementById("toTop");if(b)b.classList.toggle("show",window.scrollY>700);});
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){closeModal();closeAdmin();}});
 restoreAdminSession();load().then(openFromHash);window.addEventListener("hashchange",openFromHash);setInterval(load,60000);
 if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}
