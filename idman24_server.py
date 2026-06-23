@@ -600,39 +600,137 @@ def judo_contests(cid, wid):
 # ---- Cüdo Dünya Reytinqi (World Ranking List) ----
 _WCATS = [(1,"-60","m"),(2,"-66","m"),(3,"-73","m"),(4,"-81","m"),(5,"-90","m"),(6,"-100","m"),(7,"+100","m"),
           (8,"-48","f"),(9,"-52","f"),(10,"-57","f"),(11,"-63","f"),(12,"-70","f"),(13,"-78","f"),(14,"+78","f")]
-_rank_cache = {"ts": 0, "data": None}
+_WLAB = {str(a): b for a, b, _ in _WCATS}
+RANK_FILE = os.path.join(DATA_DIR, "idman24_rank.json")
+_rankd = {"captured": 0, "cur": {}, "prev": {}}   # cur/prev: id_person -> place
 
-def _rank_leader(w):
-    d = ijf_get({"action": "ranking.get_list", "id_weight": w}, 12 * 3600)
-    feed = d.get("feed") if isinstance(d, dict) else None
-    if not feed:
-        return None
-    top = min(feed, key=lambda x: int(x.get("place") or 999))
-    pid = top.get("id_person")
-    info = ijf_get({"action": "competitor.info", "id_person": pid}, 12 * 3600) or {}
-    cc = info.get("country_short") or ""
-    return {"name": info.get("family_name") or "", "giv": info.get("given_name") or "",
-            "cc": cc, "iso": _iso2(cc), "country": info.get("country") or "",
-            "pts": top.get("sum_points") or ""}
-
-def judo_ranking():
-    now = time.time()
-    if _rank_cache["data"] and now - _rank_cache["ts"] < 12 * 3600:
-        return _rank_cache["data"]
+def load_rankd():
+    global _rankd
     try:
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            res = list(pool.map(lambda wc: (wc, _rank_leader(wc[0])), _WCATS))
+        if os.path.exists(RANK_FILE):
+            _rankd = json.load(open(RANK_FILE, encoding="utf-8")) or _rankd
     except Exception as e:
-        print("[ranking]", e)
-        return _rank_cache["data"] or {"men": [], "women": []}
-    men, women = [], []
-    for (w, label, g), r in res:
-        row = {"weight": label, "name": (r or {}).get("name", ""), "giv": (r or {}).get("giv", ""),
-               "cc": (r or {}).get("cc", ""), "iso": (r or {}).get("iso", ""), "pts": (r or {}).get("pts", "")}
-        (men if g == "m" else women).append(row)
-    data = {"men": men, "women": women}
-    if men or women:
-        _rank_cache["ts"] = now; _rank_cache["data"] = data
+        print("[load_rankd]", e)
+
+def save_rankd():
+    try:
+        json.dump(_rankd, open(RANK_FILE, "w", encoding="utf-8"))
+    except Exception as e:
+        print("[save_rankd]", e)
+
+def _weight_feed(w):
+    d = ijf_get({"action": "ranking.get_list", "id_weight": w}, 12 * 3600)
+    return (d.get("feed") if isinstance(d, dict) else []) or []
+
+def _resolve_name(pid):
+    info = ijf_get({"action": "competitor.info", "id_person": pid}, 7 * 24 * 3600) or {}
+    cc = info.get("country_short") or ""
+    return {"name": info.get("family_name") or "", "cc": cc, "iso": _iso2(cc)}
+
+def _genders_weights(g):
+    return [a for a, _, gg in _WCATS if gg == g]
+
+def _capture_snapshot():
+    # Bütün çəkilərin yerlərini topla — həftədə bir dəfə yenilə (dəyişməni hesablamaq üçün)
+    now = time.time()
+    if _rankd["cur"] and now - _rankd.get("captured", 0) < 7 * 24 * 3600:
+        return
+    places = {}
+    for w, _, _ in _WCATS:
+        for e in _weight_feed(w):
+            places[str(e.get("id_person"))] = int(e.get("place") or 0)
+    if not places:
+        return
+    _rankd["prev"] = _rankd.get("cur") or places
+    _rankd["cur"] = places
+    _rankd["captured"] = now
+    save_rankd()
+
+def _chg(pid):
+    p = _rankd.get("prev", {}).get(str(pid)); c = _rankd.get("cur", {}).get(str(pid))
+    if p is None or c is None:
+        return 0
+    return p - c     # müsbət = irəlilədi (yer yuxarı)
+
+def judo_rank(gender, weight, limit):
+    _capture_snapshot()
+    rows = []
+    if weight in ("leaders", "all"):
+        for w in _genders_weights(gender):
+            for e in _weight_feed(w):
+                rows.append({"w": w, "place": int(e.get("place") or 9999),
+                             "pid": e.get("id_person"), "pts": int(e.get("sum_points") or 0)})
+        if weight == "leaders":
+            best = {}
+            for r in rows:
+                if r["w"] not in best or r["place"] < best[r["w"]]["place"]:
+                    best[r["w"]] = r
+            rows = sorted(best.values(), key=lambda r: r["w"])
+        else:
+            rows.sort(key=lambda r: -r["pts"])
+    else:
+        try:
+            w = int(weight)
+        except Exception:
+            return []
+        for e in _weight_feed(w):
+            rows.append({"w": w, "place": int(e.get("place") or 9999),
+                         "pid": e.get("id_person"), "pts": int(e.get("sum_points") or 0)})
+        rows.sort(key=lambda r: r["place"])
+    rows = rows[:max(1, min(limit, 100))]
+    pids = [r["pid"] for r in rows]
+    try:
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            infos = dict(zip(pids, pool.map(_resolve_name, pids)))
+    except Exception as e:
+        print("[rank-names]", e); infos = {}
+    out = []
+    for i, r in enumerate(rows):
+        info = infos.get(r["pid"]) or {}
+        out.append({"rank": i + 1, "weight": _WLAB.get(str(r["w"]), ""), "place": r["place"],
+                    "name": info.get("name", ""), "cc": info.get("cc", ""),
+                    "iso": info.get("iso", ""), "pts": r["pts"], "chg": _chg(r["pid"]),
+                    "pid": r["pid"]})
+    return out
+
+def judo_athlete(pid):
+    info = ijf_get({"action": "competitor.info", "id_person": pid}, 24 * 3600) or {}
+    cc = info.get("country_short") or ""
+    gender = "m" if info.get("gender") == "male" else "f"
+    data = {"name": info.get("family_name") or "", "giv": info.get("given_name") or "",
+            "cc": cc, "iso": _iso2(cc), "country": info.get("country") or "",
+            "age": info.get("age") or "", "cats": info.get("categories") or [],
+            "tech": info.get("ftechique") or "", "wrl": [], "contests": []}
+    lab2w = {l: a for a, l, g in _WCATS if g == gender}
+    for lab in data["cats"]:
+        w = lab2w.get(lab)
+        if not w:
+            continue
+        for e in _weight_feed(w):
+            if str(e.get("id_person")) == str(pid):
+                data["wrl"].append({"weight": lab, "place": e.get("place"), "pts": e.get("sum_points")})
+                break
+    d = ijf_get({"action": "contest.find", "id_person": pid, "part": "info"}, 6 * 3600)
+    cs = d.get("contests") if isinstance(d, dict) else []
+    rows = []
+    me = str(pid)
+    for c in (cs or []):
+        idw = str(c.get("id_person_white"))
+        mine_white = (idw == me)
+        if mine_white:
+            opp = c.get("person_blue"); oppshort = c.get("country_short_blue") or ""
+            sw = "%s-%s" % (c.get("ippon_w") or 0, c.get("waza_w") or 0)
+            sb = "%s-%s" % (c.get("ippon_b") or 0, c.get("waza_b") or 0)
+        else:
+            opp = c.get("person_white"); oppshort = c.get("country_short_white") or ""
+            sw = "%s-%s" % (c.get("ippon_b") or 0, c.get("waza_b") or 0)
+            sb = "%s-%s" % (c.get("ippon_w") or 0, c.get("waza_w") or 0)
+        rows.append({"date": (c.get("date_raw") or c.get("date") or "")[:10],
+                     "comp": c.get("competition_name") or "", "round": c.get("round_name") or "",
+                     "opp": opp or "", "oppcc": oppshort, "oppiso": _iso2(oppshort),
+                     "win": str(c.get("id_winner")) == me, "sw": sw, "sb": sb})
+    rows.sort(key=lambda r: r["date"], reverse=True)
+    data["contests"] = rows[:20]
     return data
 
 def public_live():
@@ -1008,7 +1106,17 @@ class H(BaseHTTPRequestHandler):
             age = parse_qs(u.query).get("age", ["all"])[0]
             return self._send(200, {"items": judo_calendar(age)})
         if u.path == "/api/judo/ranking":
-            return self._send(200, judo_ranking())
+            qs = parse_qs(u.query)
+            g = qs.get("gender", ["m"])[0]
+            w = qs.get("weight", ["leaders"])[0]
+            try:
+                lim = int(qs.get("limit", ["7"])[0])
+            except Exception:
+                lim = 7
+            return self._send(200, {"items": judo_rank(g, w, lim)})
+        if u.path == "/api/judo/athlete":
+            pid = parse_qs(u.query).get("id", [""])[0]
+            return self._send(200, judo_athlete(pid) if pid else {})
         if u.path == "/rss.xml":
             return self._send(200, rss_xml(), "application/rss+xml; charset=utf-8")
         if u.path == "/sitemap.xml":
@@ -1306,6 +1414,7 @@ def main():
     load_contacts()
     load_ad()
     load_poll()
+    load_rankd()
     print("\n  İdman24 başlayır...")
     if LIVE: print(f"  {len(LIVE)} xəbər keşdən dərhal yükləndi.")
     threading.Thread(target=refresher, daemon=True).start()
@@ -1458,14 +1567,34 @@ main{max-width:1240px;margin:0 auto;padding:24px 20px 60px}
 .wt{font-size:13px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .wrlgrid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
 @media(max-width:760px){.wrlgrid{grid-template-columns:1fr}}
-.wrlcol h4{margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent)}
-.wrlrow{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13.5px}
+.wrlhead{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.wrlhead h4{margin:0;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent)}
+.wrlsel{background:#0d1525;border:1px solid var(--line);color:var(--txt);padding:5px 8px;border-radius:8px;font-size:12.5px}
+.wrltop{margin-left:auto;background:#0d1525;border:1px solid var(--line);color:var(--muted);padding:5px 11px;border-radius:8px;cursor:pointer;font-size:12px}
+.wrltop.on{background:var(--accent);color:#04231a;border-color:var(--accent);font-weight:700}
+.wrlrow{display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid var(--line);font-size:13.5px;cursor:pointer}
 .wrlrow:last-child{border-bottom:none}
-.wrlw{min-width:54px;color:var(--muted);font-weight:700;font-variant-numeric:tabular-nums}
+.wrlrow:hover .wrlnm{color:var(--accent)}
+.wrlw{min-width:52px;color:var(--muted);font-weight:700;font-variant-numeric:tabular-nums;flex:0 0 auto}
 .wrlnm{flex:1;min-width:0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wrlc{display:flex;align-items:center;gap:5px;flex:0 0 auto}
 .wrlcc{color:var(--muted);font-size:11px}
-.wrlpts{min-width:74px;text-align:right;color:var(--accent);font-weight:700;font-variant-numeric:tabular-nums;flex:0 0 auto}
+.wrlpts{min-width:48px;text-align:right;color:var(--accent);font-weight:700;font-variant-numeric:tabular-nums;flex:0 0 auto}
+.wrlchg{min-width:34px;text-align:right;font-size:11.5px;font-weight:700;flex:0 0 auto}
+.rup{color:#19c37d}.rdn{color:var(--accent2)}.rsame{color:var(--muted)}
+.ahead{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.ahead h2{font-size:22px}.ahead .src{color:var(--muted);font-size:13px;margin-top:3px}
+.awrl h3,.mbody h3{font-size:14px;margin:0 0 8px}
+.achips{display:flex;flex-wrap:wrap;gap:8px}
+.achip{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:6px 12px;font-size:12.5px}
+.acon{display:flex;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)}
+.acon:last-child{border-bottom:none}
+.acd{min-width:74px;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums;flex:0 0 auto}
+.aci{flex:1;min-width:0}
+.acm{display:flex;align-items:center;gap:8px;font-size:13.5px;flex-wrap:wrap}
+.aw{color:#19c37d}.al{color:var(--accent2)}
+.acvs{font-weight:600}.acsc{color:var(--muted);font-variant-numeric:tabular-nums}
+.acsub{color:var(--muted);font-size:12px;margin-top:2px}
 .cudolow{display:grid;grid-template-columns:1fr 300px;gap:18px;align-items:start;margin-top:4px}
 .cudonews{min-width:0}
 #judoResults{max-height:430px;overflow:auto;padding-right:4px}
@@ -1715,18 +1844,44 @@ function renderCudo(items){document.getElementById("hero").innerHTML="";
     :`<div class="empty" style="margin-top:18px">Hələ cüdo xəbəri yoxdur.</div>`;
   document.getElementById("content").innerHTML=backBtn()+judoPanelHtml()+wrlHtml()+`<div class="cudolow"><div class="cudonews">${news}</div>${judoCalHtml()}</div>`;
   judoInit();judoCalLoad();loadWRL();}
+const WMEN=[["1","-60"],["2","-66"],["3","-73"],["4","-81"],["5","-90"],["6","-100"],["7","+100"]];
+const WWOM=[["8","-48"],["9","-52"],["10","-57"],["11","-63"],["12","-70"],["13","-78"],["14","+78"]];
+let WRLST={m:{weight:"leaders",top:false},f:{weight:"leaders",top:false}};
+function wrlSelect(g){const ws=g==="m"?WMEN:WWOM;return `<select class="wrlsel" onchange="wrlPickWeight('${g}',this.value)"><option value="leaders">Liderlər</option>${ws.map(w=>`<option value="${w[0]}">${w[1]} kq</option>`).join("")}</select>`;}
 function wrlHtml(){return `<div class="judopanel">
-   <div class="jph"><div><h2>🏅 Dünya Reytinqi</h2> <span class="jphs">IJF WRL · Liderlər</span></div></div>
+   <div class="jph"><div><h2>🏅 Dünya Reytinqi</h2> <span class="jphs">IJF WRL</span></div></div>
    <div class="wrlgrid">
-     <div class="wrlcol"><h4>Kişilər</h4><div id="wrlMen"><div class="loader" style="padding:16px"><div class="spin"></div></div></div></div>
-     <div class="wrlcol"><h4>Qadınlar</h4><div id="wrlWomen"><div class="loader" style="padding:16px"><div class="spin"></div></div></div></div>
+     <div class="wrlcol"><div class="wrlhead"><h4>Kişilər</h4>${wrlSelect('m')}<button class="wrltop" id="wrlTopm" onclick="wrlToggleTop('m')">Top 100</button></div><div id="wrlMen"><div class="loader" style="padding:14px"><div class="spin"></div></div></div></div>
+     <div class="wrlcol"><div class="wrlhead"><h4>Qadınlar</h4>${wrlSelect('f')}<button class="wrltop" id="wrlTopf" onclick="wrlToggleTop('f')">Top 100</button></div><div id="wrlWomen"><div class="loader" style="padding:14px"><div class="spin"></div></div></div></div>
    </div></div>`;}
-function wrlRow(r){return `<div class="wrlrow"><span class="wrlw">${esc(r.weight)} kq</span><span class="wrlnm">${esc(r.name||'—')}</span><span class="wrlc">${flagImg(r.iso,'',r.cc)}<span class="wrlcc">${esc(r.cc)}</span></span><span class="wrlpts">${esc(r.pts)}${r.pts?' xal':''}</span></div>`;}
-async function loadWRL(){const mb=document.getElementById("wrlMen"),wb=document.getElementById("wrlWomen");if(!mb)return;
-  let d={men:[],women:[]};try{d=await (await fetch("/api/judo/ranking")).json();}catch(e){}
+function wrlChg(n){return n>0?`<span class="rup">▲${n}</span>`:(n<0?`<span class="rdn">▼${-n}</span>`:`<span class="rsame">–</span>`);}
+function wrlRow(r,lead){return `<div class="wrlrow" onclick="openAthlete('${esc(String(r.pid))}')"><span class="wrlw">${lead?(esc(r.weight)+' kq'):('#'+r.place)}</span><span class="wrlnm">${esc(r.name||'—')}</span><span class="wrlc">${flagImg(r.iso,'',r.cc)}<span class="wrlcc">${esc(r.cc)}</span></span><span class="wrlpts">${esc(r.pts)}</span><span class="wrlchg">${wrlChg(r.chg||0)}</span></div>`;}
+function wrlTopBtn(g){const b=document.getElementById("wrlTop"+g);if(!b)return;b.textContent=WRLST[g].top?"Top 7":"Top 100";b.classList.toggle("on",WRLST[g].top);}
+function wrlPickWeight(g,w){WRLST[g].weight=w;WRLST[g].top=false;wrlTopBtn(g);loadWRLgender(g);}
+function wrlToggleTop(g){WRLST[g].top=!WRLST[g].top;wrlTopBtn(g);loadWRLgender(g);}
+async function loadWRLgender(g){const box=document.getElementById(g==="m"?"wrlMen":"wrlWomen");if(!box)return;
+  box.innerHTML='<div class="loader" style="padding:14px"><div class="spin"></div></div>';
+  const st=WRLST[g];let weight=st.weight,limit;
+  if(st.top){limit=100;if(weight==="leaders")weight="all";}else{limit=weight==="leaders"?14:7;}
+  let items=[];try{items=((await (await fetch(`/api/judo/ranking?gender=${g}&weight=${encodeURIComponent(weight)}&limit=${limit}`)).json()).items)||[];}catch(e){}
   if(CURRENT!=="Cüdo")return;
-  mb.innerHTML=(d.men&&d.men.length)?d.men.map(wrlRow).join(""):'<p style="color:var(--muted);font-size:13px">Məlumat yoxdur.</p>';
-  if(wb)wb.innerHTML=(d.women&&d.women.length)?d.women.map(wrlRow).join(""):'<p style="color:var(--muted);font-size:13px">Məlumat yoxdur.</p>';}
+  const lead=(st.weight==="leaders"&&!st.top);
+  box.innerHTML=items.length?items.map(r=>wrlRow(r,lead)).join(""):'<p style="color:var(--muted);font-size:13px">Məlumat yoxdur.</p>';}
+function loadWRL(){WRLST={m:{weight:"leaders",top:false},f:{weight:"leaders",top:false}};loadWRLgender("m");loadWRLgender("f");}
+async function openAthlete(pid){const mb=document.getElementById("modalBox");document.getElementById("modal").classList.add("open");
+  mb.innerHTML='<div class="loader" style="padding:48px"><div class="spin"></div></div>';
+  let a={};try{a=await (await fetch("/api/judo/athlete?id="+encodeURIComponent(pid))).json();}catch(e){}
+  mb.innerHTML=athleteHtml(a);}
+function athleteHtml(a){if(!a||!a.name)return '<span class="modal-close" onclick="closeModal()">×</span><div class="mbody"><p style="color:var(--muted)">Məlumat tapılmadı.</p></div>';
+  const wrl=(a.wrl||[]).map(w=>`<span class="achip">${esc(w.weight)} kq · <b>${esc(w.place)}. yer</b> (${esc(w.pts)} xal)</span>`).join("");
+  const con=(a.contests||[]).map(c=>`<div class="acon"><div class="acd">${esc(c.date)}</div><div class="aci"><div class="acm">${c.win?'<b class="aw">Qələbə</b>':'<b class="al">Məğlub</b>'} <span class="acvs">${esc(c.opp)} ${flagImg(c.oppiso,'',c.oppcc)}</span> <span class="acsc">${esc(c.sw)} : ${esc(c.sb)}</span></div><div class="acsub">${esc(c.comp)}${c.round?(' · '+esc(c.round)):''}</div></div></div>`).join("");
+  return `<span class="modal-close" onclick="closeModal()">×</span>
+   <div class="mbody">
+     <div class="ahead">${flagImg(a.iso,'',a.cc)}<div><h2 style="margin:0">${esc(a.giv)} <b>${esc(a.name)}</b></h2><div class="src">${esc(a.country)}${a.age?(' · '+esc(a.age)+' yaş'):''}${a.tech?(' · '+esc(a.tech)):''}</div></div></div>
+     ${wrl?`<div class="awrl"><h3>Dünya reytinqi</h3><div class="achips">${wrl}</div></div>`:''}
+     <h3 style="margin-top:18px">Son nəticələr</h3>
+     ${con||'<p style="color:var(--muted)">Nəticə tapılmadı.</p>'}
+   </div>`;}
 async function judoInit(){
   if(!JUDO.comps){try{JUDO.comps=((await (await fetch("/api/judo/competitions")).json()).items)||[];}catch(e){JUDO.comps=[];}}
   const sel=document.getElementById("judoComp");if(!sel)return;
