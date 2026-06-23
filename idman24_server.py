@@ -45,6 +45,7 @@ UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 COMMENTS_FILE = os.path.join(DATA_DIR, "idman24_comments.json")
 STATS_FILE = os.path.join(DATA_DIR, "idman24_stats.json")
 CONTACTS_FILE = os.path.join(DATA_DIR, "idman24_contacts.json")
+GEO_FILE = os.path.join(DATA_DIR, "idman24_geo.json")
 # Əlaqə mesajları üçün e-poçt (hostinqdə dəyişən kimi qoyulur, kodda görünmür):
 GMAIL_USER = os.environ.get("GMAIL_USER", "")            # göndərən gmail
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")  # gmail "app password"
@@ -337,6 +338,51 @@ def save_stats():
         json.dump(STATS, open(STATS_FILE, "w", encoding="utf-8"), ensure_ascii=False)
     except Exception as e:
         print("[save_stats]", e)
+
+# ---- Coğrafiya (oxucuların yeri) — yalnız admin görür ----
+GEO = {}
+_GEO_CACHE = {}
+
+def load_geo():
+    global GEO
+    try:
+        if os.path.exists(GEO_FILE):
+            GEO = json.load(open(GEO_FILE, encoding="utf-8")) or {}
+    except Exception as e:
+        print("[load_geo]", e); GEO = {}
+
+def save_geo():
+    try:
+        json.dump(GEO, open(GEO_FILE, "w", encoding="utf-8"), ensure_ascii=False)
+    except Exception as e:
+        print("[save_geo]", e)
+
+def ip_location(ip):
+    # IP-dən mümkün qədər dəqiq yer: şəhər + ölkə (təxmini, IP səviyyəsində)
+    if not ip or re.match(r"^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1|fc|fd)", ip):
+        return ""
+    if ip in _GEO_CACHE:
+        return _GEO_CACHE[ip]
+    label = ""
+    try:
+        d = json.loads(http_get("http://ip-api.com/json/" + ip +
+                                "?fields=status,country,regionName,city", timeout=6))
+        if d.get("status") == "success":
+            city = d.get("city") or d.get("regionName") or ""
+            country = d.get("country") or ""
+            label = ", ".join([p for p in [city, country] if p]) or country
+    except Exception:
+        label = ""
+    _GEO_CACHE[ip] = label
+    return label
+
+def record_geo(ip):
+    loc = ip_location(ip)
+    if not loc:
+        return
+    with _slock:
+        GEO[loc] = GEO.get(loc, 0) + 1
+        save_geo()
 
 # ---- Əlaqə mesajları ----
 _ctlock = threading.Lock()
@@ -652,6 +698,10 @@ class H(BaseHTTPRequestHandler):
                         s["title"] = (body.get("title") or "")[:160]
                     s["views" if typ == "view" else "shares"] += 1
                     save_stats()
+                if typ == "view":
+                    xff = self.headers.get("X-Forwarded-For", "")
+                    ip = (xff.split(",")[0].strip() if xff else self.client_address[0])
+                    threading.Thread(target=record_geo, args=(ip,), daemon=True).start()
             return self._send(200, {"ok": True})
         if u.path == "/api/stats":
             if body.get("password") != ADMIN_PASSWORD:
@@ -661,10 +711,13 @@ class H(BaseHTTPRequestHandler):
                           "views": v.get("views", 0), "shares": v.get("shares", 0)}
                          for k, v in STATS.items()]
             items.sort(key=lambda x: x["views"], reverse=True)
+            with _slock:
+                geo = sorted(([{"loc": k, "count": v} for k, v in GEO.items()]),
+                             key=lambda x: x["count"], reverse=True)
             return self._send(200, {"ok": True,
                 "totalViews": sum(i["views"] for i in items),
                 "totalShares": sum(i["shares"] for i in items),
-                "items": items[:100]})
+                "items": items[:100], "geo": geo[:80]})
         if u.path == "/api/contact":
             name = (body.get("name") or "").strip()[:80]
             phone = (body.get("phone") or "").strip()[:40]
@@ -758,6 +811,7 @@ def main():
     load_cache()
     load_comments()
     load_stats()
+    load_geo()
     load_contacts()
     print("\n  İdman24 başlayır...")
     if LIVE: print(f"  {len(LIVE)} xəbər keşdən dərhal yükləndi.")
@@ -970,7 +1024,7 @@ async function translateArticle(){const a=CUR;if(!a)return;const btn=document.ge
   const mt=document.querySelector("#modalBox .mtext");if(mt)mt.textContent=a._t.body;
   a._tshown=true;if(btn)btn.textContent="Orijinal dilə qayıt";}
 async function loadComments(id){const box=document.getElementById("cmList");if(!box)return;
-  try{const d=await (await fetch("/api/comments?id="+encodeURIComponent(id))).json();const list=d.comments||[];
+  try{const d=await (await fetch("/api/comments?id="+encodeURIComponent(id))).json();const list=(d.comments||[]).slice().reverse();
     box.innerHTML=list.length?list.map(c=>`<div class="cm"><div class="cmhead"><b>${esc(c.name)}</b><small>${fmtTime(c.date)}</small></div><p>${esc(c.text)}</p></div>`).join("")
       :`<p class="cmEmpty">Hələ şərh yoxdur. İlk şərhi siz yazın.</p>`;
   }catch(e){box.innerHTML=`<p class="cmEmpty">Şərhlər yüklənmədi.</p>`;}}
@@ -1053,6 +1107,9 @@ async function loadStats(){const box=document.getElementById("statsBox");if(!box
     const rows=list.map(i=>`<tr><td style="padding:7px 8px;border-bottom:1px solid var(--line)">${esc(i.title||i.id)}</td>
       <td style="text-align:center;padding:7px 8px;border-bottom:1px solid var(--line);color:var(--accent);font-weight:700">${i.views}</td>
       <td style="text-align:center;padding:7px 8px;border-bottom:1px solid var(--line);color:var(--gold);font-weight:700">${i.shares}</td></tr>`).join("");
+    const geo=d.geo||[];
+    const geoHtml=geo.length?`<h4 style="margin:20px 0 8px;font-size:14px;color:var(--txt)">🌍 Oxucuların yeri</h4>`+
+      geo.map(g=>`<div style="display:flex;justify-content:space-between;padding:6px 8px;border-bottom:1px solid var(--line)"><span>${esc(g.loc)}</span><b style="color:var(--accent)">${g.count}</b></div>`).join(""):"";
     box.innerHTML=`<div style="display:flex;gap:12px;margin-bottom:14px">
       <div style="flex:1;background:#0d1525;border:1px solid var(--line);border-radius:10px;padding:12px"><div style="color:var(--muted);font-size:12px">Ümumi oxunma</div><div style="font-size:24px;font-weight:800;color:var(--accent)">${d.totalViews}</div></div>
       <div style="flex:1;background:#0d1525;border:1px solid var(--line);border-radius:10px;padding:12px"><div style="color:var(--muted);font-size:12px">Ümumi paylaşım</div><div style="font-size:24px;font-weight:800;color:var(--gold)">${d.totalShares}</div></div></div>
@@ -1060,7 +1117,7 @@ async function loadStats(){const box=document.getElementById("statsBox");if(!box
         <th style="text-align:left;padding:7px 8px;color:var(--muted);font-size:12px">Xəbər</th>
         <th style="padding:7px 8px;color:var(--muted);font-size:12px">Oxunma</th>
         <th style="padding:7px 8px;color:var(--muted);font-size:12px">Paylaşım</th></tr></thead><tbody>${rows}</tbody></table>`
-       :`<p style="color:var(--muted)">Hələ oxunma/paylaşım qeydə alınmayıb.</p>`}`;
+       :`<p style="color:var(--muted)">Hələ oxunma/paylaşım qeydə alınmayıb.</p>`}${geoHtml}`;
   }catch(e){box.innerHTML="Statistika yüklənmədi.";}}
 function editArticle(id){const a=ALL.find(x=>x.id===id);if(!a)return;EDIT_ID=id;
   document.getElementById("aTitle").value=a.title||"";
