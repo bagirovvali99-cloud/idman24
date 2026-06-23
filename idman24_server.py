@@ -1423,10 +1423,30 @@ main{max-width:1240px;margin:0 auto;padding:24px 20px 60px}
 .vtoggle{display:flex;gap:4px}
 .vtoggle button{background:#0d1525;border:1px solid var(--line);color:var(--muted);font-size:11.5px;padding:5px 11px;border-radius:7px;cursor:pointer}
 .vtoggle button.von{background:var(--accent);color:#04231a;border-color:var(--accent);font-weight:700}
-.bracket{display:flex;gap:10px;overflow-x:auto;padding-bottom:8px;align-items:stretch}
-.bcol{width:166px;flex:0 0 166px;display:flex;flex-direction:column}
 .flag{width:18px;height:13px;object-fit:cover;border-radius:2px;flex:0 0 auto;box-shadow:0 0 0 1px rgba(0,0,0,.3)}
 .cc{color:var(--muted);font-size:9.5px;flex:0 0 auto}
+/* IJF üslublu şəbəkə (draw) */
+.ijfbr{display:flex;align-items:stretch;overflow-x:auto;padding:4px 0 12px}
+.imsub{font-weight:700;color:var(--muted);text-transform:uppercase;font-size:11px;letter-spacing:.05em;margin:16px 0 2px}
+.imcol{display:flex;flex-direction:column;flex:0 0 auto;min-width:212px;padding:0 9px}
+.imhead{font-size:10.5px;font-weight:700;color:var(--accent);text-transform:uppercase;text-align:center;margin-bottom:6px;letter-spacing:.04em}
+.imbody{flex:1;display:flex;flex-direction:column;justify-content:space-around}
+.imwrap{position:relative;flex:1 1 auto;display:flex;align-items:center;padding:7px 0}
+.im{position:relative;background:#fff;border-radius:11px;box-shadow:0 1px 5px rgba(0,0,0,.28);overflow:hidden;width:100%}
+.imrow{display:flex;align-items:center;gap:7px;padding:7px 9px 7px 3px;color:#1a2230;font-size:12.5px}
+.imrow+.imrow{border-top:1px solid #edf0f5}
+.imcc{writing-mode:vertical-rl;transform:rotate(180deg);font-size:8.5px;font-weight:700;color:#9aa3b2;letter-spacing:.03em;align-self:stretch;display:flex;align-items:center;justify-content:center}
+.imn{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500}
+.imn b{font-weight:800}
+.ims{font-weight:800;color:#1a2230;flex:0 0 auto}
+.imlose .imn{color:#a6adba;text-decoration:line-through}.imlose .ims{color:#a6adba}
+.imwin .imn{color:#0c7b50}
+.imlive{box-shadow:0 0 0 2px var(--accent2),0 1px 5px rgba(0,0,0,.28)}
+.imlivebadge{position:absolute;top:-7px;right:6px;background:var(--accent2);color:#04231a;font-size:8px;font-weight:800;padding:1px 5px;border-radius:10px;z-index:2}
+.imcol:not(:last-child) .imwrap::after{content:"";position:absolute;left:100%;width:9px;height:50%;border-right:2px solid #c7cfdd}
+.imcol:not(:last-child) .imwrap:nth-child(odd)::after{top:50%;border-top:2px solid #c7cfdd}
+.imcol:not(:last-child) .imwrap:nth-child(even)::after{bottom:50%;border-bottom:2px solid #c7cfdd}
+.imcol:not(:first-child) .imwrap::before{content:"";position:absolute;right:100%;width:9px;top:50%;border-top:2px solid #c7cfdd}
 .bcol h4{margin:0 0 8px;font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent);text-align:center;padding-bottom:5px;border-bottom:1px solid var(--line)}
 .bextra h4{color:var(--accent2)}
 .bmatches{flex:1;display:flex;flex-direction:column;justify-content:space-around;gap:9px}
@@ -1561,7 +1581,7 @@ function widgetsHtml(){
   const topHtml=top.length?top.map((i,n)=>`<div class="wrow" onclick='openModal("${i.id}")'><span class="wn">${n+1}</span><span class="wt">${esc(i.title)}</span></div>`).join(""):'<p style="color:var(--muted);font-size:13px">Hələ statistika toplanır.</p>';
   return `<div class="section-h" style="margin-top:34px"><h2>Faydalı</h2></div>
    <div class="widgets">
-     <div class="widget"><h3>🏆 İdman fənləri</h3><div class="wchips">${chips}</div></div>
+     <div class="widget"><h3>🏆 İdman növləri</h3><div class="wchips">${chips}</div></div>
      <div class="widget"><h3>🥋 Yaxınlaşan cüdo yarışları</h3><div id="wJudo"><div class="loader" style="padding:14px"><div class="spin"></div></div></div></div>
      <div class="widget"><h3>🔥 Ən çox oxunan</h3>${topHtml}</div>
    </div>`;}
@@ -1675,25 +1695,35 @@ function roundKey(n){const s=(n||"").toLowerCase().replace(/[^a-z0-9]/g,"");
   if(s.includes("64"))return"r64";if(s.includes("32"))return"r32";if(s.includes("16"))return"r16";
   if(s.includes("quarter"))return"qf";if(s.includes("semi"))return"sf";
   if(s.includes("final"))return"final";return"other";}
-const RLAB={r64:"1/32 final",r32:"1/16 final",r16:"1/8 final",qf:"Çərək final",sf:"Yarımfinal",final:"Final",rep:"Repesaj",bronze:"Bürünc medal",other:"Digər"};
+const RORDER=["r64","r32","r16","qf","sf","final"];
 function shortName(n){n=(n||"").trim();if(!n)return"—";const t=n.split(/\s+/);if(t.length<2)return n;
   let sur=t.find(x=>x.length>1&&x===x.toUpperCase())||t[0];
   const given=t.filter(x=>x!==sur).join(" ").trim();
   const tc=sur.charAt(0).toUpperCase()+sur.slice(1).toLowerCase();
   return given?`${tc} ${given[0].toUpperCase()}.`:tc;}
 function flagImg(iso,code,name){return iso?`<img class="flag" src="https://flagcdn.com/h20/${iso}.png" alt="${esc(code||'')}" title="${esc(name||code||'')}" loading="lazy">`:(code?`<small class="cc">${esc(code)}</small>`:"");}
-function bMatch(c){const live=!c.finished;
-  return `<div class="bmatch ${live?'blive':''}">
-    <div class="brow ${c.winner==='w'?'bwin':''}"><span>${flagImg(c.fw,c.cw,c.cwn)}<span class="bnm" title="${esc(c.white||'')}">${esc(shortName(c.white))}</span></span><b>${esc(c.sw)}</b></div>
-    <div class="brow ${c.winner==='b'?'bwin':''}"><span>${flagImg(c.fb,c.cb,c.cbn)}<span class="bnm" title="${esc(c.blue||'')}">${esc(shortName(c.blue))}</span></span><b>${esc(c.sb)}</b></div>
-    ${live?'<span class="blivebadge">CANLI</span>':''}</div>`;}
-function bracketHtml(items){const g={};items.forEach(c=>{const k=roundKey(c.round);(g[k]=g[k]||[]).push(c);});
-  const order=["r64","r32","r16","qf","sf","final","rep","bronze","other"];
-  let h='<div class="bracket">';let any=false;
-  order.forEach(k=>{if(!g[k])return;any=true;const ex=(k==="rep"||k==="bronze")?"bextra":"";
-    h+=`<div class="bcol ${ex}"><h4>${RLAB[k]}</h4><div class="bmatches">${g[k].map(bMatch).join("")}</div></div>`;});
-  h+='</div>';
-  return any?h:'<p style="color:var(--muted)">Cədvəl məlumatı yoxdur.</p>';}
+function nameFmt(n){n=(n||"").trim();if(!n)return"—";const t=n.split(/\s+/);
+  let si=t.findIndex(x=>x.length>1&&x===x.toUpperCase());if(si<0)si=t.length-1;
+  const sur=t[si];const giv=t.filter((_,i)=>i!==si).join(" ");
+  return `${giv?esc(giv)+' ':''}<b>${esc(sur)}</b>`;}
+function imSide(iso,code,cname,name,score,win,lose){
+  return `<div class="imrow ${win?'imwin':''} ${lose?'imlose':''}"><span class="imcc">${esc(code||'')}</span>${flagImg(iso,'',cname)}<span class="imn">${nameFmt(name)}</span><span class="ims">${esc(score)}</span></div>`;}
+function bMatch(c){const live=!c.finished,hw=!!c.winner;
+  return `<div class="imwrap"><div class="im ${live?'imlive':''}">
+    ${imSide(c.fw,c.cw,c.cwn,c.white,c.sw,c.winner==='w',hw&&c.winner!=='w')}
+    ${imSide(c.fb,c.cb,c.cbn,c.blue,c.sb,c.winner==='b',hw&&c.winner!=='b')}
+    ${live?'<span class="imlivebadge">CANLI</span>':''}</div></div>`;}
+function bracketHtml(items){const g={},lbl={};items.forEach(c=>{const k=roundKey(c.round);(g[k]=g[k]||[]).push(c);lbl[k]=c.round||"";});
+  const col=k=>`<div class="imcol"><div class="imhead">${esc(lbl[k]||"")}</div><div class="imbody">${g[k].map(bMatch).join("")}</div></div>`;
+  const mh=RORDER.filter(k=>g[k]).map(col).join("");
+  const eh=["rep","bronze"].filter(k=>g[k]).map(col).join("");
+  const oh=g.other?col("other"):"";
+  if(!mh&&!eh&&!oh)return '<p style="color:var(--muted)">Cədvəl məlumatı yoxdur.</p>';
+  let out="";
+  if(mh)out+=`<div class="ijfbr">${mh}</div>`;
+  if(eh)out+=`<div class="imsub">Repechage / Bronze</div><div class="ijfbr">${eh}</div>`;
+  if(oh)out+=`<div class="ijfbr">${oh}</div>`;
+  return out;}
 function judoSide(name,iso,code,cname,score,win,shido,color){return `<div class="js ${win?'jwin':''}"><span class="jn"><i class="gi ${color}"></i>${flagImg(iso,code,cname)}${esc(name||'—')}</span><span class="jsc">${esc(score)}${shido?` <i class="shi">${shido}</i>`:''}</span></div>`;}
 function judoRow(c){const live=!c.finished;
   return `<div class="jrow ${live?'jlivebox':''}"><div class="jmeta">${live?'<span class="jlive">CANLI</span>':''}${c.round?`<span>${esc(c.round)}</span>`:''}${c.gs?'<span>Qızıl Hesab</span>':''}</div>
