@@ -1179,7 +1179,10 @@ function adminLogin(){document.getElementById("adminInner").innerHTML=`<span cla
   setTimeout(()=>document.getElementById("pw").focus(),50);}
 async function doLogin(){const p=document.getElementById("pw").value;
   const r=await (await fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:p})})).json();
-  if(r.ok){PW=p;dashOpen();}else document.getElementById("pwErr").style.display="block";}
+  if(r.ok){PW=p;saveAdminSession(p);dashOpen();}else document.getElementById("pwErr").style.display="block";}
+function saveAdminSession(p){try{localStorage.setItem("idman24_admin",JSON.stringify({p:btoa(unescape(encodeURIComponent(p))),e:Date.now()+7*864e5}));}catch(e){}}
+function restoreAdminSession(){try{const o=JSON.parse(localStorage.getItem("idman24_admin")||"null");if(o&&o.e>Date.now()){PW=decodeURIComponent(escape(atob(o.p)));}else localStorage.removeItem("idman24_admin");}catch(e){}}
+function adminLogout(){PW="";try{localStorage.removeItem("idman24_admin");}catch(e){}dashClose();izToast("Çıxış edildi");}
 function adminForm(){EDIT_ID=null;const opts=CATS.filter(c=>c!=="Hamısı").map(c=>`<option>${c}</option>`).join("");
   document.getElementById("adminInner").innerHTML=`<span class="modal-close" onclick="closeAdmin()">×</span>
   <div class="mbody"><h2 style="margin-top:0">Öz Xəbərini Əlavə Et</h2>
@@ -1240,7 +1243,8 @@ function dashNav(s){DSEC=s;dashRender();}
 function dashRender(){const nav=[["overview","📊 İcmal"],["articles","📰 Xəbərlərim"],["stats","📈 Statistika"],["comments","💬 Şərhlər"],["contacts","📩 Mesajlar"],["sources","🌐 Mənbələr"]];
   document.getElementById("dashNav").innerHTML=`<div class="dlogo"><span>İdman</span>24 · Admin</div>`+
     nav.map(n=>`<button class="${DSEC===n[0]?'on':''}" onclick="dashNav('${n[0]}')">${n[1]}</button>`).join("")+
-    `<button onclick="dashClose()" style="margin-top:18px;color:var(--accent2)">← Sayta qayıt</button>`;
+    `<button onclick="dashClose()" style="margin-top:18px;color:var(--accent2)">← Sayta qayıt</button>`+
+    `<button onclick="adminLogout()" style="margin-top:4px;color:var(--muted)">🔒 Çıxış</button>`;
   const m=document.getElementById("dashMain");
   if(DSEC==="overview")m.innerHTML=dashOverview();
   else if(DSEC==="articles"){m.innerHTML=dashArticles();renderMyList();}
@@ -1334,7 +1338,7 @@ async function delArticle(id){if(!confirm("Silinsin?"))return;
 function selectCat(c){CURRENT=c;SEARCH="";document.getElementById("q").value="";window.scrollTo({top:0,behavior:"smooth"});buildTabs();render();buildTicker();}
 let st;function onSearch(){SEARCH=document.getElementById("q").value;clearTimeout(st);st=setTimeout(()=>{render();buildTicker();},250);}
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){closeModal();closeAdmin();}});
-load().then(openFromHash);window.addEventListener("hashchange",openFromHash);setInterval(load,60000);
+restoreAdminSession();load().then(openFromHash);window.addEventListener("hashchange",openFromHash);setInterval(load,60000);
 </script></body></html>"""
 
 
