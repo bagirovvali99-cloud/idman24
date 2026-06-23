@@ -22,7 +22,7 @@ from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
 import xml.etree.ElementTree as ET
 
 # ============================ AYARLAR ============================
@@ -378,6 +378,43 @@ def send_contact_email(name, phone, msg, img_bytes=None, ext="jpg"):
         print("[email]", e); return False
 
 # ============================ ZƏNGİNLƏŞDİRMƏ (şəkil + mətn) ============================
+def _chunks(t, n):
+    out = []
+    while t:
+        if len(t) <= n:
+            out.append(t); break
+        cut = t.rfind("\n", 0, n)
+        if cut < n * 0.5:
+            cut = t.rfind(" ", 0, n)
+        if cut <= 0:
+            cut = n
+        out.append(t[:cut]); t = t[cut:]
+    return out
+
+_TRC = {}
+def translate_text(text, tl):
+    text = (text or "").strip()
+    if not text:
+        return ""
+    tl = re.sub(r"[^a-zA-Z\-]", "", tl)[:5] or "en"
+    key = tl + "|" + str(abs(hash(text)))
+    if key in _TRC:
+        return _TRC[key]
+    parts = []
+    for ch in _chunks(text, 1500):
+        try:
+            url = ("https://translate.googleapis.com/translate_a/single?client=gtx"
+                   "&sl=auto&tl=" + tl + "&dt=t&q=" + quote(ch))
+            data = json.loads(http_get(url, timeout=12))
+            parts.append("".join(seg[0] for seg in data[0] if seg and seg[0]))
+        except Exception:
+            parts.append(ch)
+    res = "".join(parts)
+    if len(_TRC) > 2000:
+        _TRC.clear()
+    _TRC[key] = res
+    return res
+
 def og_image(h):
     for pat in [r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)',
                 r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image',
@@ -657,6 +694,10 @@ class H(BaseHTTPRequestHandler):
                 return self._send(401, {"ok": False, "error": "Parol yanlışdır"})
             with _ctlock:
                 return self._send(200, {"ok": True, "items": list(reversed(CONTACTS))[:200]})
+        if u.path == "/api/translate":
+            txt = (body.get("text") or "")[:6000]
+            tl = body.get("tl") or "en"
+            return self._send(200, {"text": translate_text(txt, tl)})
         if u.path == "/api/login":
             return self._send(200, {"ok": body.get("password") == ADMIN_PASSWORD})
         if u.path == "/api/refresh":
@@ -890,6 +931,7 @@ function renderModal(a,loading){const text=a.body||a.summary||"";
         <div class="mactions">
           ${a.link?`<a class="mlink" href="${esc(a.link)}" target="_blank" rel="noopener">Orijinal mənbə →</a>`:''}
           <button class="sharebtn" onclick="shareArticle()">↗ Paylaş</button>
+          <button class="sharebtn" id="trBtn" onclick="translateArticle()">🌐 Tərcümə</button>
         </div>
         <div class="comments"><h3>Şərhlər</h3>
           <div id="cmList"><p class="cmEmpty">Yüklənir...</p></div>
@@ -900,7 +942,7 @@ function renderModal(a,loading){const text=a.body||a.summary||"";
           </div>
         </div>`}
     </div>`;}
-async function openModal(id){const a=find(id);if(!a)return;CUR=a;trackArticle(a,"view");const need=!a.manual&&a.link&&(!a.body||!a.image);
+async function openModal(id){const a=find(id);if(!a)return;CUR=a;a._tshown=false;trackArticle(a,"view");const need=!a.manual&&a.link&&(!a.body||!a.image);
   renderModal(a,need);document.getElementById("modal").classList.add("open");
   if(need){try{const e=await (await fetch("/api/article?url="+encodeURIComponent(a.link))).json();
     if(e.image&&!a.image)a.image=e.image;if(e.body)a.body=e.body;}catch(_){}
@@ -915,6 +957,18 @@ function shareArticle(){const a=CUR;if(!a)return;trackArticle(a,"share");const u
   else if(navigator.clipboard){navigator.clipboard.writeText(url).then(()=>izToast("Keçid kopyalandı: "+url)).catch(()=>izToast(url));}
   else izToast(url);}
 function openFromHash(){const m=(location.hash||"").match(/[#&]a=([^&]+)/);if(m){const id=decodeURIComponent(m[1]);if(find(id))openModal(id);}}
+let TR_LANG=((navigator.language||"en").split("-")[0]||"en").toLowerCase();if(TR_LANG==="az")TR_LANG="en";
+async function translateArticle(){const a=CUR;if(!a)return;const btn=document.getElementById("trBtn");
+  if(a._tshown){renderModal(a,false);a._tshown=false;loadComments(a.id);return;}
+  if(btn)btn.textContent="Tərcümə olunur...";
+  if(!a._t){try{
+    const tt=await (await fetch("/api/translate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:a.title||"",tl:TR_LANG})})).json();
+    const bb=await (await fetch("/api/translate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:(a.body||a.summary||""),tl:TR_LANG})})).json();
+    a._t={title:tt.text||a.title,body:bb.text||(a.body||a.summary||"")};
+  }catch(e){izToast("Tərcümə alınmadı");if(btn)btn.textContent="🌐 Tərcümə";return;}}
+  const h=document.querySelector("#modalBox h2");if(h)h.textContent=a._t.title;
+  const mt=document.querySelector("#modalBox .mtext");if(mt)mt.textContent=a._t.body;
+  a._tshown=true;if(btn)btn.textContent="Orijinal dilə qayıt";}
 async function loadComments(id){const box=document.getElementById("cmList");if(!box)return;
   try{const d=await (await fetch("/api/comments?id="+encodeURIComponent(id))).json();const list=d.comments||[];
     box.innerHTML=list.length?list.map(c=>`<div class="cm"><div class="cmhead"><b>${esc(c.name)}</b><small>${fmtTime(c.date)}</small></div><p>${esc(c.text)}</p></div>`).join("")
