@@ -450,6 +450,87 @@ def save_poll():
     except Exception as e:
         print("[save_poll]", e)
 
+# ============ Cüdo canlı nəticələr (IJF JudoBase açıq API) ============
+IJF_BASE = "https://data.ijf.org/api/get_json"
+_ijf_cache = {}   # key -> (ts, data)
+
+def ijf_get(params, ttl):
+    key = "&".join("%s=%s" % (k, v) for k, v in sorted(params.items()))
+    now = time.time()
+    hit = _ijf_cache.get(key)
+    if hit and now - hit[0] < ttl:
+        return hit[1]
+    q = "&".join("params%5B" + k + "%5D=" + quote(str(v)) for k, v in params.items())
+    try:
+        data = json.loads(http_get(IJF_BASE + "?" + q, timeout=25))
+    except Exception as e:
+        print("[ijf]", e)
+        return hit[1] if hit else None
+    _ijf_cache[key] = (now, data)
+    return data
+
+def judo_competitions():
+    data = ijf_get({"action": "competition.get_list"}, 6 * 3600)
+    if not isinstance(data, list):
+        return []
+    today = datetime.now().strftime("%Y/%m/%d")
+    cy = datetime.now().year
+    out = []
+    for c in data:
+        try:
+            y = int(c.get("comp_year") or 0)
+        except Exception:
+            y = 0
+        if y < cy - 1:
+            continue
+        df = (c.get("date_from") or "").replace("\\/", "/")
+        dt = (c.get("date_to") or "").replace("\\/", "/")
+        out.append({"id": c.get("id_competition"),
+                    "name": c.get("name") or c.get("competition_code") or "Yarış",
+                    "city": c.get("city") or "", "country": c.get("country") or "",
+                    "date_from": df, "date_to": dt,
+                    "live": bool(df and dt and df <= today <= dt),
+                    "has_results": str(c.get("has_results")) in ("1", "true", "True")})
+    out.sort(key=lambda x: x["date_from"], reverse=True)
+    out.sort(key=lambda x: not x["live"])
+    return out[:60]
+
+def judo_categories(cid):
+    data = ijf_get({"action": "competition.categories_full", "id_competition": cid}, 24 * 3600)
+    if not isinstance(data, dict):
+        return []
+    out = []
+    for g in data.values():
+        if not isinstance(g, dict):
+            continue
+        gender = g.get("gender")
+        for wid, label in (g.get("categories") or {}).items():
+            out.append({"id": wid, "label": label, "gender": gender})
+    out.sort(key=lambda x: int(x["id"]) if str(x["id"]).isdigit() else 999)
+    return out
+
+def judo_contests(cid, wid):
+    data = ijf_get({"action": "contest.find", "id_competition": cid, "id_weight": wid}, 25)
+    cs = data.get("contests") if isinstance(data, dict) else (data if isinstance(data, list) else [])
+    out = []
+    for c in cs or []:
+        idw, idb, win = c.get("id_person_white"), c.get("id_person_blue"), c.get("id_winner")
+        winner = "w" if (win and win == idw) else ("b" if (win and win == idb) else "")
+        def sc(p):
+            return "%s-%s" % (c.get("ippon_" + p) or 0, c.get("waza_" + p) or 0)
+        out.append({"white": c.get("person_white") or "", "cw": c.get("country_white") or "",
+                    "blue": c.get("person_blue") or "", "cb": c.get("country_blue") or "",
+                    "sw": sc("w"), "sb": sc("b"),
+                    "shidow": c.get("penalty_w") or 0, "shidob": c.get("penalty_b") or 0,
+                    "winner": winner,
+                    "finished": str(c.get("is_finished")) in ("1", "true", "True"),
+                    "gs": str(c.get("gs")) in ("1", "true", "True"),
+                    "round": c.get("round_name") or "",
+                    "fid": c.get("id_fight") or "0"})
+    out.sort(key=lambda x: int(x["fid"]) if str(x["fid"]).isdigit() else 0, reverse=True)
+    out.sort(key=lambda x: x["finished"])   # bitməmiş (canlı) görüşlər yuxarıda
+    return out
+
 def public_live():
     # Saytda göstərmək üçün: yalnız şəkilli xəbərlər + eyni şəkli işlədən
     # təkrar/canlı yeniləmələri birləşdir (ən yenisini saxla).
@@ -810,6 +891,15 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, AD)
         if u.path == "/api/poll":
             return self._send(200, POLL)
+        if u.path == "/api/judo/competitions":
+            return self._send(200, {"items": judo_competitions()})
+        if u.path == "/api/judo/categories":
+            cid = parse_qs(u.query).get("comp", [""])[0]
+            return self._send(200, {"items": judo_categories(cid) if cid else []})
+        if u.path == "/api/judo/contests":
+            qs = parse_qs(u.query)
+            cid = qs.get("comp", [""])[0]; wid = qs.get("weight", [""])[0]
+            return self._send(200, {"items": judo_contests(cid, wid) if (cid and wid) else []})
         if u.path == "/rss.xml":
             return self._send(200, rss_xml(), "application/rss+xml; charset=utf-8")
         if u.path == "/sitemap.xml":
@@ -1221,6 +1311,16 @@ main{max-width:1240px;margin:0 auto;padding:24px 20px 60px}
 .pollopt{display:block;width:100%;text-align:left;background:#0d1525;border:1px solid var(--line);color:var(--txt);padding:11px 14px;border-radius:10px;margin-bottom:8px;cursor:pointer;font-size:14px}
 .pollopt:hover{border-color:var(--accent);color:var(--accent)}
 .favchip{background:var(--card);border:1px solid var(--line);padding:9px 14px;border-radius:30px;cursor:pointer;font-size:14px;display:inline-flex;align-items:center;gap:6px}
+.judosel{display:flex;gap:10px;flex-wrap:wrap}
+.judosel select{background:var(--card);border:1px solid var(--line);color:var(--txt);padding:10px 12px;border-radius:10px;font-size:14px;max-width:100%}
+.jrow{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:11px 14px;margin-bottom:10px}
+.jmeta{display:flex;gap:12px;font-size:11px;color:var(--muted);margin-bottom:7px;text-transform:uppercase;letter-spacing:.05em}
+.jlive{color:var(--accent2);font-weight:700}
+.js{display:flex;justify-content:space-between;align-items:center;padding:5px 0}
+.jn{font-size:14.5px}.jn small{color:var(--muted);font-size:12px}
+.jsc{font-weight:700;font-variant-numeric:tabular-nums;color:var(--muted)}
+.jwin .jn{color:var(--accent);font-weight:700}.jwin .jsc{color:var(--accent)}
+.jwin .jn:after{content:" ✓";color:var(--accent)}
 .dash{position:fixed;inset:0;background:#0a0e17;z-index:150;display:none;grid-template-columns:228px 1fr}
 .dash.open{display:grid}
 .dashnav{background:#0f1626;border-right:1px solid var(--line);padding:18px 12px;overflow:auto}
@@ -1289,7 +1389,7 @@ async function load(){
   buildTabs();render();buildTicker();
 }
 async function hardRefresh(){document.getElementById("status").textContent="Yenilənir...";await fetch("/api/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});load();}
-function buildTabs(){const list=[CATS[0],"⭐ Mənim",...CATS.slice(1),"Əlaqə"];document.getElementById("tabs").innerHTML=list.map(c=>`<button class="tab ${c===CURRENT?'active':''}" onclick="selectCat('${c}')">${c}</button>`).join("");}
+function buildTabs(){const list=[CATS[0],"⭐ Mənim","🥋 Cüdo",...CATS.slice(1),"Əlaqə"];document.getElementById("tabs").innerHTML=list.map(c=>`<button class="tab ${c===CURRENT?'active':''}" onclick="selectCat('${c}')">${c}</button>`).join("");}
 function current(){let i=[...ALL];
   if(CURRENT!=="Hamısı")i=i.filter(x=>x.category===CURRENT);
   if(SEARCH){const q=SEARCH.toLowerCase();i=i.filter(x=>(x.title+" "+x.summary).toLowerCase().includes(q));}return i;}
@@ -1299,6 +1399,7 @@ function buildTicker(){const tk=document.querySelector('.ticker');if(SEARCH||CUR
   tk.style.display='block';const t=ALL.slice(0,10).map(i=>`<span>${esc(i.title)}</span>`).join("");document.getElementById("ticker").innerHTML="<b>SON DƏQİQƏ</b>"+t+t;}
 function render(){if(CURRENT==="Əlaqə"){document.getElementById("hero").innerHTML="";renderContact();return;}
   if(CURRENT==="⭐ Mənim"){document.getElementById("hero").innerHTML="";renderPersonal();return;}
+  if(CURRENT==="🥋 Cüdo"){document.getElementById("hero").innerHTML="";renderJudo();return;}
   const items=current(),hero=document.getElementById("hero"),content=document.getElementById("content");
   if(!items.length){hero.innerHTML="";content.innerHTML=`<div class="empty">Bu kateqoriyada xəbər tapılmadı.</div>`;return;}
   let rest=items;
@@ -1353,6 +1454,42 @@ function favPicker(){const cats=CATS.filter(c=>c!=="Hamısı");
    <button class="refresh" onclick="saveFavsFromPicker()">Yadda saxla</button>`;}
 function saveFavsFromPicker(){FAVS=[...document.querySelectorAll('#content input[type=checkbox]:checked')].map(c=>c.value);FAV_EDIT=false;saveFavs();render();}
 function editFavs(){FAV_EDIT=true;render();}
+let JUDO={comps:null,cats:[],cid:"",wid:"",t:null};
+function renderJudo(){const content=document.getElementById("content");
+  content.innerHTML=`<div class="section-h"><h2>🥋 Cüdo — Canlı nəticələr</h2></div>
+   <p style="color:var(--muted);margin-bottom:14px;max-width:640px">Beynəlxalq Cüdo Federasiyasının (IJF) rəsmi məlumatları. Yarışı və çəki dərəcəsini seçin — canlı görüşlər yuxarıda göstərilir.</p>
+   <div class="judosel">
+     <select id="judoComp" onchange="judoPickComp()"><option>Yüklənir...</option></select>
+     <select id="judoWeight" onchange="judoPickWeight()"><option>—</option></select>
+   </div>
+   <div id="judoResults" style="margin-top:18px"><div class="loader" style="padding:30px"><div class="spin"></div></div></div>`;
+  judoInit();}
+async function judoInit(){
+  if(!JUDO.comps){try{JUDO.comps=((await (await fetch("/api/judo/competitions")).json()).items)||[];}catch(e){JUDO.comps=[];}}
+  const sel=document.getElementById("judoComp");if(!sel)return;
+  if(!JUDO.comps.length){sel.innerHTML='<option>Məlumat yoxdur</option>';document.getElementById("judoResults").innerHTML='<p style="color:var(--muted)">Hazırda nəticə məlumatı əlçatan deyil.</p>';return;}
+  sel.innerHTML=JUDO.comps.map(c=>`<option value="${c.id}">${c.live?'🔴 ':''}${esc(c.name)}${c.city?' — '+esc(c.city):''}</option>`).join("");
+  JUDO.cid=JUDO.comps[0].id;sel.value=JUDO.cid;await judoLoadCats();}
+async function judoPickComp(){JUDO.cid=document.getElementById("judoComp").value;await judoLoadCats();}
+async function judoLoadCats(){const w=document.getElementById("judoWeight");if(!w)return;w.innerHTML='<option>...</option>';
+  try{JUDO.cats=((await (await fetch("/api/judo/categories?comp="+encodeURIComponent(JUDO.cid))).json()).items)||[];}catch(e){JUDO.cats=[];}
+  if(!JUDO.cats.length){w.innerHTML='<option>—</option>';document.getElementById("judoResults").innerHTML='<p style="color:var(--muted)">Bu yarış üçün çəki məlumatı yoxdur.</p>';return;}
+  w.innerHTML=JUDO.cats.map(c=>`<option value="${c.id}">${c.gender==='f'?'Qadın':'Kişi'} ${esc(c.label)} kq</option>`).join("");
+  JUDO.wid=JUDO.cats[0].id;w.value=JUDO.wid;await judoLoadContests();}
+async function judoPickWeight(){JUDO.wid=document.getElementById("judoWeight").value;await judoLoadContests();}
+async function judoLoadContests(){const box=document.getElementById("judoResults");if(!box)return;
+  if(JUDO.t){clearTimeout(JUDO.t);JUDO.t=null;}
+  box.innerHTML='<div class="loader" style="padding:24px"><div class="spin"></div></div>';
+  let items=[];try{items=((await (await fetch(`/api/judo/contests?comp=${encodeURIComponent(JUDO.cid)}&weight=${encodeURIComponent(JUDO.wid)}`)).json()).items)||[];}catch(e){}
+  if(CURRENT!=="🥋 Cüdo")return;
+  if(!items.length){box.innerHTML='<p style="color:var(--muted)">Bu çəkidə hələ görüş yoxdur.</p>';return;}
+  box.innerHTML=items.map(judoRow).join("");
+  if(items.some(x=>!x.finished)){JUDO.t=setTimeout(()=>{if(CURRENT==="🥋 Cüdo")judoLoadContests();},30000);}}
+function judoSide(name,country,score,win,shido){return `<div class="js ${win?'jwin':''}"><span class="jn">${esc(name||'—')}${country?` <small>${esc(country)}</small>`:''}</span><span class="jsc">${esc(score)}${shido?` · ${shido}🟨`:''}</span></div>`;}
+function judoRow(c){const live=!c.finished;
+  return `<div class="jrow"><div class="jmeta">${live?'<span class="jlive">🔴 CANLI</span>':''}${c.round?`<span>${esc(c.round)}</span>`:''}${c.gs?'<span>Golden Score</span>':''}</div>
+    ${judoSide(c.white,c.cw,c.sw,c.winner==='w',c.shidow)}
+    ${judoSide(c.blue,c.cb,c.sb,c.winner==='b',c.shidob)}</div>`;}
 function find(id){return ALL.find(i=>i.id===id);}
 function relatedHtml(a){const rel=ALL.filter(x=>x.category===a.category&&x.id!==a.id).slice(0,4);
   if(!rel.length)return"";
@@ -1659,7 +1796,7 @@ function renderMyList(){const mine=ALL.filter(i=>i.manual);
 async function pinArticle(id){await fetch("/api/article/pin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:PW,id})});await load();renderMyList();}
 async function delArticle(id){if(!confirm("Silinsin?"))return;
   await fetch("/api/article/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:PW,id})});await load();renderMyList();}
-function selectCat(c){CURRENT=c;SEARCH="";if(c!=="⭐ Mənim")FAV_EDIT=false;document.getElementById("q").value="";window.scrollTo({top:0,behavior:"smooth"});buildTabs();render();buildTicker();}
+function selectCat(c){CURRENT=c;SEARCH="";if(c!=="⭐ Mənim")FAV_EDIT=false;if(c!=="🥋 Cüdo"&&JUDO.t){clearTimeout(JUDO.t);JUDO.t=null;}document.getElementById("q").value="";window.scrollTo({top:0,behavior:"smooth"});buildTabs();render();buildTicker();}
 let st;function onSearch(){SEARCH=document.getElementById("q").value;clearTimeout(st);st=setTimeout(()=>{render();buildTicker();},250);}
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){closeModal();closeAdmin();}});
 restoreAdminSession();load().then(openFromHash);window.addEventListener("hashchange",openFromHash);setInterval(load,60000);
