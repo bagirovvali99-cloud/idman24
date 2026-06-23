@@ -34,6 +34,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(BASE, "idman24_cache.json")
 MANUAL_FILE = os.path.join(BASE, "idman24_manual.json")
 UPLOAD_DIR = os.path.join(BASE, "uploads")
+COMMENTS_FILE = os.path.join(BASE, "idman24_comments.json")
 
 FEEDS = [
     {"name": "APA Sport",    "url": "https://apasport.az/rss",    "site": "apasport.az", "sport_only": False},
@@ -287,6 +288,24 @@ def load_manual():
 def save_manual(items):
     json.dump(items, open(MANUAL_FILE, "w", encoding="utf-8"), ensure_ascii=False)
 
+# ---- Şərhlər ----
+_clock = threading.Lock()
+COMMENTS = {}
+
+def load_comments():
+    global COMMENTS
+    try:
+        if os.path.exists(COMMENTS_FILE):
+            COMMENTS = json.load(open(COMMENTS_FILE, encoding="utf-8")) or {}
+    except Exception as e:
+        print("[load_comments]", e); COMMENTS = {}
+
+def save_comments():
+    try:
+        json.dump(COMMENTS, open(COMMENTS_FILE, "w", encoding="utf-8"), ensure_ascii=False)
+    except Exception as e:
+        print("[save_comments]", e)
+
 # ============================ ZƏNGİNLƏŞDİRMƏ (şəkil + mətn) ============================
 def og_image(h):
     for pat in [r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)',
@@ -469,6 +488,10 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/api/article":
             url = parse_qs(u.query).get("url", [""])[0]
             return self._send(200, enrich(url))
+        if u.path == "/api/comments":
+            aid = parse_qs(u.query).get("id", [""])[0]
+            with _clock:
+                return self._send(200, {"comments": COMMENTS.get(aid, [])})
         if u.path.startswith("/uploads/"):
             fn = os.path.basename(u.path)
             fp = os.path.join(UPLOAD_DIR, fn)
@@ -499,6 +522,18 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         ln = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(ln) or b"{}")
+        if u.path == "/api/comments":
+            aid = (body.get("id") or "").strip()
+            text = (body.get("text") or "").strip()[:1000]
+            name = ((body.get("name") or "").strip()[:40]) or "Anonim"
+            if not aid or not text:
+                return self._send(400, {"ok": False, "error": "Şərh boş ola bilməz"})
+            with _clock:
+                COMMENTS.setdefault(aid, []).append(
+                    {"name": name, "text": text, "date": datetime.now(timezone.utc).isoformat()})
+                COMMENTS[aid] = COMMENTS[aid][-300:]
+                save_comments()
+            return self._send(200, {"ok": True})
         if u.path == "/api/login":
             return self._send(200, {"ok": body.get("password") == ADMIN_PASSWORD})
         if u.path == "/api/refresh":
@@ -522,6 +557,30 @@ class H(BaseHTTPRequestHandler):
             })
             save_manual(items)
             return self._send(200, {"ok": True})
+        if u.path == "/api/article/edit":
+            if body.get("password") != ADMIN_PASSWORD:
+                return self._send(401, {"ok": False, "error": "Parol yanlışdır"})
+            if not body.get("title"):
+                return self._send(400, {"ok": False, "error": "Başlıq tələb olunur"})
+            items = load_manual()
+            found = False
+            for it in items:
+                if it.get("id") == body.get("id"):
+                    it["title"] = body["title"].strip()
+                    it["summary"] = (body.get("summary") or "").strip()
+                    it["body"] = (body.get("body") or "").strip()
+                    it["category"] = body.get("category") or it.get("category", "Digər")
+                    it["author"] = (body.get("author") or "Redaksiya").strip()
+                    it["link"] = (body.get("link") or "").strip()
+                    newimg = self._save_image(body.get("image_data") or "")
+                    if newimg:                       # yeni şəkil yükləndisə əvəz et
+                        it["image"] = newimg
+                    found = True
+                    break
+            if not found:
+                return self._send(404, {"ok": False, "error": "Xəbər tapılmadı"})
+            save_manual(items)
+            return self._send(200, {"ok": True})
         if u.path == "/api/article/delete":
             if body.get("password") != ADMIN_PASSWORD:
                 return self._send(401, {"ok": False, "error": "Parol yanlışdır"})
@@ -533,6 +592,7 @@ class H(BaseHTTPRequestHandler):
 # ============================ START ============================
 def main():
     load_cache()
+    load_comments()
     print("\n  İdman24 başlayır...")
     if LIVE: print(f"  {len(LIVE)} xəbər keşdən dərhal yükləndi.")
     threading.Thread(target=refresher, daemon=True).start()
@@ -609,6 +669,21 @@ main{max-width:1240px;margin:0 auto;padding:24px 20px 60px}
 .modal-box .mimg{width:100%;max-height:440px;object-fit:cover;display:block;background:#0d1525}.modal-box .mbody{padding:26px}
 .modal-box h2{font-size:26px;margin:12px 0;line-height:1.25}.modal-box .mtext{color:#c5d3ec;font-size:15.5px;line-height:1.7;white-space:pre-wrap}
 .modal-box .mlink{display:inline-block;margin-top:20px;background:var(--accent);color:#04231a;padding:11px 20px;border-radius:10px;font-weight:700}
+.mactions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:18px}
+.sharebtn{display:inline-flex;align-items:center;gap:7px;background:var(--card);border:1px solid var(--line);color:var(--txt);padding:10px 16px;border-radius:10px;font-weight:600;font-size:14px;cursor:pointer}
+.sharebtn:hover{border-color:var(--accent);color:var(--accent)}
+.comments{margin-top:28px;border-top:1px solid var(--line);padding-top:20px}
+.comments h3{font-size:17px;margin-bottom:14px}
+.cm{background:#0d1525;border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px}
+.cm .cmhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px}
+.cm b{color:var(--accent);font-size:13.5px}.cm small{color:var(--muted);font-size:11.5px}
+.cm p{color:#c5d3ec;font-size:14px;line-height:1.55;white-space:pre-wrap;margin:0}
+.cmEmpty{color:var(--muted);font-size:13.5px;margin-bottom:14px}
+.cmForm{margin-top:14px;display:flex;flex-direction:column;gap:8px}
+.cmForm input,.cmForm textarea{background:#0d1525;border:1px solid var(--line);color:var(--txt);padding:11px 13px;border-radius:9px;font-size:14px;outline:none;font-family:inherit}
+.cmForm input:focus,.cmForm textarea:focus{border-color:var(--accent)}.cmForm textarea{resize:vertical;min-height:70px}
+.cmForm button{align-self:flex-start;background:var(--accent);color:#04231a;border:none;padding:10px 20px;border-radius:9px;font-weight:700;font-size:14px;cursor:pointer}
+.iz-toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);background:#141d30;border:1px solid var(--accent);color:var(--accent);padding:11px 20px;border-radius:10px;font-size:14px;z-index:200}
 .modal-close{position:absolute;top:18px;right:22px;font-size:30px;color:#fff;cursor:pointer;z-index:101;background:rgba(0,0,0,.5);width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center}
 label{display:block;font-size:13px;color:var(--muted);margin:14px 0 6px;font-weight:600}
 input.f,textarea.f,select.f{width:100%;background:#0d1525;border:1px solid var(--line);color:var(--txt);padding:12px 14px;border-radius:10px;font-size:14px;outline:none;font-family:inherit}
@@ -675,19 +750,48 @@ function render(){const items=current(),hero=document.getElementById("hero"),con
       <div class="c-body"><h3>${esc(i.title)}</h3>${i.summary?`<p>${esc(i.summary)}</p>`:""}
         <div class="foot"><span style="color:var(--accent)">${esc(i.source)}</span><span>${fmtTime(i.date)}</span></div></div></div>`).join("")}</div>`;}
 function find(id){return ALL.find(i=>i.id===id);}
+let CUR=null,EDIT_ID=null;
 function renderModal(a,loading){const text=a.body||a.summary||"";
   document.getElementById("modalBox").innerHTML=`<span class="modal-close" onclick="closeModal()">×</span>
     ${a.image?`<img class="mimg" src="${esc(a.image)}" alt="">`:''}
     <div class="mbody">${badge(a)}<h2>${esc(a.title)}</h2><div class="src" style="margin-bottom:14px">${srcLine(a)} · ${esc(a.author||"")}</div>
     ${loading?`<div class="loader" style="padding:30px"><div class="spin"></div><div style="color:var(--muted);font-size:13px">Tam xəbər yüklənir...</div></div>`
-      :`<div class="mtext">${esc(text||"Bu xəbərin tam mətni mənbədə mövcuddur.")}</div>`}
-    ${a.link?`<a class="mlink" href="${esc(a.link)}" target="_blank" rel="noopener">Orijinal mənbə →</a>`:''}</div>`;}
-async function openModal(id){const a=find(id);if(!a)return;const need=!a.manual&&a.link&&(!a.body||!a.image);
+      :`<div class="mtext">${esc(text||"Bu xəbərin tam mətni mənbədə mövcuddur.")}</div>
+        <div class="mactions">
+          ${a.link?`<a class="mlink" href="${esc(a.link)}" target="_blank" rel="noopener">Orijinal mənbə →</a>`:''}
+          <button class="sharebtn" onclick="shareArticle()">↗ Paylaş</button>
+        </div>
+        <div class="comments"><h3>Şərhlər</h3>
+          <div id="cmList"><p class="cmEmpty">Yüklənir...</p></div>
+          <div class="cmForm">
+            <input id="cmName" placeholder="Adınız (istəyə bağlı)" maxlength="40">
+            <textarea id="cmText" placeholder="Şərhinizi yazın..." maxlength="1000"></textarea>
+            <button onclick="postComment()">Göndər</button>
+          </div>
+        </div>`}
+    </div>`;}
+async function openModal(id){const a=find(id);if(!a)return;CUR=a;const need=!a.manual&&a.link&&(!a.body||!a.image);
   renderModal(a,need);document.getElementById("modal").classList.add("open");
   if(need){try{const e=await (await fetch("/api/article?url="+encodeURIComponent(a.link))).json();
     if(e.image&&!a.image)a.image=e.image;if(e.body)a.body=e.body;}catch(_){}
-    if(document.getElementById("modal").classList.contains("open"))renderModal(a,false);render();}}
+    if(document.getElementById("modal").classList.contains("open"))renderModal(a,false);render();}
+  if(document.getElementById("modal").classList.contains("open"))loadComments(a.id);}
 function closeModal(){document.getElementById("modal").classList.remove("open");}
+function izToast(m){const t=document.createElement("div");t.className="iz-toast";t.textContent=m;document.body.appendChild(t);setTimeout(()=>t.remove(),2200);}
+function shareArticle(){const a=CUR;if(!a)return;const url=a.link||location.href;const title=a.title||"İdman24";
+  if(navigator.share){navigator.share({title,url}).catch(()=>{});}
+  else if(navigator.clipboard){navigator.clipboard.writeText(url).then(()=>izToast("Link kopyalandı ✓")).catch(()=>izToast(url));}
+  else izToast(url);}
+async function loadComments(id){const box=document.getElementById("cmList");if(!box)return;
+  try{const d=await (await fetch("/api/comments?id="+encodeURIComponent(id))).json();const list=d.comments||[];
+    box.innerHTML=list.length?list.map(c=>`<div class="cm"><div class="cmhead"><b>${esc(c.name)}</b><small>${fmtTime(c.date)}</small></div><p>${esc(c.text)}</p></div>`).join("")
+      :`<p class="cmEmpty">Hələ şərh yoxdur. İlk şərhi siz yazın.</p>`;
+  }catch(e){box.innerHTML=`<p class="cmEmpty">Şərhlər yüklənmədi.</p>`;}}
+async function postComment(){const a=CUR;if(!a)return;const text=document.getElementById("cmText").value.trim();
+  if(!text){izToast("Şərh boş ola bilməz");return;}
+  const name=(document.getElementById("cmName").value||"").trim();
+  await fetch("/api/comments",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:a.id,name,text})});
+  document.getElementById("cmText").value="";loadComments(a.id);izToast("Şərhiniz əlavə olundu ✓");}
 /* ----- admin (parol qorumalı) ----- */
 function openAdmin(){document.getElementById("adminModal").classList.add("open");PW?adminForm():adminLogin();}
 function closeAdmin(){document.getElementById("adminModal").classList.remove("open");}
@@ -701,7 +805,7 @@ function adminLogin(){document.getElementById("adminInner").innerHTML=`<span cla
 async function doLogin(){const p=document.getElementById("pw").value;
   const r=await (await fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:p})})).json();
   if(r.ok){PW=p;adminForm();}else document.getElementById("pwErr").style.display="block";}
-function adminForm(){const opts=CATS.filter(c=>c!=="Hamısı").map(c=>`<option>${c}</option>`).join("");
+function adminForm(){EDIT_ID=null;const opts=CATS.filter(c=>c!=="Hamısı").map(c=>`<option>${c}</option>`).join("");
   document.getElementById("adminInner").innerHTML=`<span class="modal-close" onclick="closeAdmin()">×</span>
   <div class="mbody"><h2 style="margin-top:0">Öz Xəbərini Əlavə Et</h2>
   <p style="color:var(--muted);font-size:14px">Xəbərin qızıl <b style="color:var(--gold)">REDAKSİYA</b> nişanı ilə yuxarıda görünəcək.</p>
@@ -713,9 +817,19 @@ function adminForm(){const opts=CATS.filter(c=>c!=="Hamısı").map(c=>`<option>$
   <label>Qısa təsvir</label><textarea class="f" id="aSummary" style="min-height:60px"></textarea>
   <label>Tam mətn</label><textarea class="f" id="aBody"></textarea>
   <label>Mənbə linki (istəyə bağlı)</label><input class="f" id="aLink" placeholder="https://...">
-  <button class="btn" onclick="saveArticle()">Xəbəri yayımla</button>
+  <button class="btn" id="aSubmit" onclick="saveArticle()">Xəbəri yayımla</button>
   <h3 style="margin:26px 0 4px;font-size:16px">Əlavə etdiyim xəbərlər</h3><div class="mylist" id="myList"></div></div>`;
   renderMyList();}
+function editArticle(id){const a=ALL.find(x=>x.id===id);if(!a)return;EDIT_ID=id;
+  document.getElementById("aTitle").value=a.title||"";
+  document.getElementById("aCat").value=a.category||"Digər";
+  document.getElementById("aAuthor").value=a.author||"Redaksiya";
+  document.getElementById("aSummary").value=a.summary||"";
+  document.getElementById("aBody").value=a.body||"";
+  document.getElementById("aLink").value=a.link||"";
+  const sb=document.getElementById("aSubmit");if(sb)sb.textContent="Dəyişikliyi yadda saxla";
+  document.getElementById("adminInner").scrollTop=0;
+  amsg("Düzəliş rejimi — dəyişib yadda saxlayın (yeni şəkil seçməsəniz köhnəsi qalır)",true);}
 function amsg(t,ok){const m=document.getElementById("amsg");m.style.display="block";m.textContent=t;
   m.style.background=ok?"rgba(0,230,168,.15)":"rgba(255,61,113,.15)";m.style.color=ok?"var(--accent)":"var(--accent2)";
   setTimeout(()=>{m.style.display="none";},4000);}
@@ -726,16 +840,21 @@ async function saveArticle(){const t=document.getElementById("aTitle").value.tri
     amsg("Şəkil yüklənir...",true);
     image_data=await new Promise(res=>{const r=new FileReader();r.onload=()=>res(r.result);r.readAsDataURL(fileEl.files[0]);});
   }
-  const payload={password:PW,title:t,category:document.getElementById("aCat").value,author:document.getElementById("aAuthor").value.trim(),
+  const payload={password:PW,id:EDIT_ID,title:t,category:document.getElementById("aCat").value,author:document.getElementById("aAuthor").value.trim(),
     image_data,summary:document.getElementById("aSummary").value.trim(),
     body:document.getElementById("aBody").value.trim(),link:document.getElementById("aLink").value.trim()};
-  const r=await (await fetch("/api/article/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})).json();
-  if(r.ok){amsg("✓ Xəbər yayımlandı!",true);["aTitle","aImage","aSummary","aBody","aLink"].forEach(i=>document.getElementById(i).value="");await load();renderMyList();}
+  const ep=EDIT_ID?"/api/article/edit":"/api/article/add";
+  const r=await (await fetch(ep,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})).json();
+  if(r.ok){amsg(EDIT_ID?"✓ Dəyişiklik yadda saxlanıldı!":"✓ Xəbər yayımlandı!",true);
+    EDIT_ID=null;const sb=document.getElementById("aSubmit");if(sb)sb.textContent="Xəbəri yayımla";
+    ["aTitle","aImage","aSummary","aBody","aLink"].forEach(i=>document.getElementById(i).value="");await load();renderMyList();}
   else amsg(r.error||"Xəta.",false);}
 function renderMyList(){const mine=ALL.filter(i=>i.manual);
   document.getElementById("myList").innerHTML=mine.length?mine.map(i=>`<div class="li"><div><b>${esc(i.title)}</b><br>
     <small style="color:var(--muted)">${esc(i.category)} · ${fmtTime(i.date)}</small></div>
-    <button class="del" onclick="delArticle('${i.id}')">Sil</button></div>`).join(""):`<p style="color:var(--muted);font-size:13px;margin-top:8px">Hələ xəbər yoxdur.</p>`;}
+    <div style="display:flex;gap:8px">
+      <button onclick="editArticle('${i.id}')" style="background:var(--card);border:1px solid var(--line);color:var(--txt);padding:7px 12px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px">Düzəliş</button>
+      <button class="del" onclick="delArticle('${i.id}')">Sil</button></div></div>`).join(""):`<p style="color:var(--muted);font-size:13px;margin-top:8px">Hələ xəbər yoxdur.</p>`;}
 async function delArticle(id){if(!confirm("Silinsin?"))return;
   await fetch("/api/article/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:PW,id})});await load();renderMyList();}
 function selectCat(c){CURRENT=c;SEARCH="";document.getElementById("q").value="";window.scrollTo({top:0,behavior:"smooth"});buildTabs();render();buildTicker();}
