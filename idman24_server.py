@@ -46,6 +46,7 @@ COMMENTS_FILE = os.path.join(DATA_DIR, "idman24_comments.json")
 STATS_FILE = os.path.join(DATA_DIR, "idman24_stats.json")
 CONTACTS_FILE = os.path.join(DATA_DIR, "idman24_contacts.json")
 GEO_FILE = os.path.join(DATA_DIR, "idman24_geo.json")
+DAILY_FILE = os.path.join(DATA_DIR, "idman24_daily.json")
 # Əlaqə mesajları üçün e-poçt (hostinqdə dəyişən kimi qoyulur, kodda görünmür):
 GMAIL_USER = os.environ.get("GMAIL_USER", "")            # göndərən gmail
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")  # gmail "app password"
@@ -384,6 +385,33 @@ def record_geo(ip):
         GEO[loc] = GEO.get(loc, 0) + 1
         save_geo()
 
+# ---- Günlük oxunma trendi + mənbə statusu ----
+DAILY = {}
+SOURCE_STATUS = {}
+
+def load_daily():
+    global DAILY
+    try:
+        if os.path.exists(DAILY_FILE):
+            DAILY = json.load(open(DAILY_FILE, encoding="utf-8")) or {}
+    except Exception as e:
+        print("[load_daily]", e); DAILY = {}
+
+def save_daily():
+    try:
+        json.dump(DAILY, open(DAILY_FILE, "w", encoding="utf-8"), ensure_ascii=False)
+    except Exception as e:
+        print("[save_daily]", e)
+
+def bump_daily():
+    d = datetime.now(timezone.utc).date().isoformat()
+    with _slock:
+        DAILY[d] = DAILY.get(d, 0) + 1
+        if len(DAILY) > 120:
+            for k in sorted(DAILY)[:-120]:
+                DAILY.pop(k, None)
+        save_daily()
+
 # ---- Əlaqə mesajları ----
 _ctlock = threading.Lock()
 CONTACTS = []
@@ -567,13 +595,18 @@ def background_enrich():
 # ============================ FETCH (yalnız yeni) ============================
 def _feed_safe(f):
     try:
-        return parse_feed(http_get(f["url"]), f)
+        items = parse_feed(http_get(f["url"]), f)
+        SOURCE_STATUS[f["name"]] = {"count": len(items), "ok": True, "type": "RSS"}
+        return items
     except Exception as e:
-        print("[fetch]", f["name"], e); return []
+        print("[fetch]", f["name"], e)
+        SOURCE_STATUS[f["name"]] = {"count": 0, "ok": False, "type": "RSS"}
+        return []
 
 def _scrape_safe(s):
     items, errs = scrape_one(s)
     for e in errs: print("[scrape]", e)
+    SOURCE_STATUS[s["name"]] = {"count": len(items), "ok": (len(items) > 0), "type": "Federasiya"}
     return items
 
 def fetch_all():
@@ -699,6 +732,7 @@ class H(BaseHTTPRequestHandler):
                     s["views" if typ == "view" else "shares"] += 1
                     save_stats()
                 if typ == "view":
+                    bump_daily()
                     xff = self.headers.get("X-Forwarded-For", "")
                     ip = (xff.split(",")[0].strip() if xff else self.client_address[0])
                     threading.Thread(target=record_geo, args=(ip,), daemon=True).start()
@@ -718,6 +752,46 @@ class H(BaseHTTPRequestHandler):
                 "totalViews": sum(i["views"] for i in items),
                 "totalShares": sum(i["shares"] for i in items),
                 "items": items[:100], "geo": geo[:80]})
+        if u.path == "/api/dashboard":
+            if body.get("password") != ADMIN_PASSWORD:
+                return self._send(401, {"ok": False, "error": "Parol yanlışdır"})
+            manual = load_manual()
+            with _slock:
+                st = [{"id": k, "title": v.get("title", ""), "views": v.get("views", 0),
+                       "shares": v.get("shares", 0)} for k, v in STATS.items()]
+                geo = sorted([{"loc": k, "count": v} for k, v in GEO.items()],
+                             key=lambda x: x["count"], reverse=True)
+                daily = sorted(DAILY.items())[-14:]
+                sources = [dict(name=k, **v) for k, v in SOURCE_STATUS.items()]
+            st.sort(key=lambda x: x["views"], reverse=True)
+            tmap = {s["id"]: s["title"] for s in st}
+            with _clock:
+                total_comments = sum(len(v) for v in COMMENTS.values())
+                flat = []
+                for aid, arr in COMMENTS.items():
+                    for c in arr:
+                        flat.append({"id": aid, "title": tmap.get(aid, ""), "name": c.get("name", ""),
+                                     "text": c.get("text", ""), "date": c.get("date", "")})
+            flat.sort(key=lambda x: x["date"], reverse=True)
+            with _ctlock:
+                contacts = list(reversed(CONTACTS))[:20]
+                total_contacts = len(CONTACTS)
+            return self._send(200, {"ok": True,
+                "totals": {"views": sum(s["views"] for s in st), "shares": sum(s["shares"] for s in st),
+                           "comments": total_comments, "messages": total_contacts,
+                           "myArticles": len(manual), "liveArticles": len(LIVE), "locations": len(GEO)},
+                "daily": [{"date": d, "count": c} for d, c in daily],
+                "geo": geo[:80], "top": st[:100], "sources": sources,
+                "recentComments": flat[:30], "recentContacts": contacts, "updated": UPDATED})
+        if u.path == "/api/comment/delete":
+            if body.get("password") != ADMIN_PASSWORD:
+                return self._send(401, {"ok": False})
+            aid, dt, tx = body.get("id"), body.get("date"), body.get("text")
+            with _clock:
+                arr = COMMENTS.get(aid, [])
+                COMMENTS[aid] = [c for c in arr if not (c.get("date") == dt and c.get("text") == tx)]
+                save_comments()
+            return self._send(200, {"ok": True})
         if u.path == "/api/contact":
             name = (body.get("name") or "").strip()[:80]
             phone = (body.get("phone") or "").strip()[:40]
@@ -812,6 +886,7 @@ def main():
     load_comments()
     load_stats()
     load_geo()
+    load_daily()
     load_contacts()
     print("\n  İdman24 başlayır...")
     if LIVE: print(f"  {len(LIVE)} xəbər keşdən dərhal yükləndi.")
@@ -908,6 +983,29 @@ main{max-width:1240px;margin:0 auto;padding:24px 20px 60px}
 .ctf{width:100%;background:#0d1525;border:1px solid var(--line);color:var(--txt);padding:12px 14px;border-radius:10px;font-size:14px;outline:none;font-family:inherit;margin-bottom:12px}
 .ctf:focus{border-color:var(--accent)}textarea.ctf{resize:vertical;min-height:120px}
 .ctbtn{background:var(--accent);color:#04231a;border:none;padding:13px 26px;border-radius:10px;font-weight:800;font-size:15px;cursor:pointer;margin-top:4px}
+.dash{position:fixed;inset:0;background:#0a0e17;z-index:150;display:none;grid-template-columns:228px 1fr}
+.dash.open{display:grid}
+.dashnav{background:#0f1626;border-right:1px solid var(--line);padding:18px 12px;overflow:auto}
+.dashnav .dlogo{font-weight:900;font-size:19px;margin:4px 8px 18px}.dashnav .dlogo span{color:var(--accent)}
+.dashnav button{display:block;width:100%;text-align:left;background:transparent;border:none;color:var(--muted);padding:11px 13px;border-radius:9px;font-size:14px;cursor:pointer;font-weight:600;margin-bottom:3px}
+.dashnav button:hover{color:var(--txt);background:#141d30}.dashnav button.on{background:var(--accent);color:#04231a}
+.dashmain{padding:24px 28px;overflow:auto}.dashmain h2{font-size:22px;margin-bottom:3px}
+.dashmain .sub{color:var(--muted);font-size:13px;margin-bottom:20px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:13px;margin-bottom:22px}
+.kpi{background:#0f1626;border:1px solid var(--line);border-radius:12px;padding:15px}
+.kpi .k{color:var(--muted);font-size:12px;margin-bottom:6px}.kpi .v{font-size:27px;font-weight:800}
+.panel{background:#0f1626;border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:18px}
+.panel h3{font-size:15px;margin-bottom:13px}
+.bars{display:flex;align-items:flex-end;gap:6px;height:130px}
+.bars .bar{background:var(--accent);border-radius:4px 4px 0 0;min-height:3px;width:100%}
+.bars .bl{color:var(--muted);font-size:10px;text-align:center;margin-top:5px}
+.dtable{width:100%;border-collapse:collapse;font-size:13px}
+.dtable th{text-align:left;color:var(--muted);font-size:12px;padding:7px 8px;border-bottom:1px solid var(--line)}
+.dtable td{padding:8px;border-bottom:1px solid var(--line)}
+.dgrid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media(max-width:780px){.dash.open{grid-template-columns:1fr;grid-template-rows:auto 1fr}
+  .dashnav{border-right:none;border-bottom:1px solid var(--line);display:flex;gap:6px;overflow-x:auto;padding:10px}
+  .dashnav .dlogo{display:none}.dashnav button{width:auto;white-space:nowrap;margin:0}.dgrid{grid-template-columns:1fr}}
 .modal-close{position:absolute;top:18px;right:22px;font-size:30px;color:#fff;cursor:pointer;z-index:101;background:rgba(0,0,0,.5);width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center}
 label{display:block;font-size:13px;color:var(--muted);margin:14px 0 6px;font-weight:600}
 input.f,textarea.f,select.f{width:100%;background:#0d1525;border:1px solid var(--line);color:var(--txt);padding:12px 14px;border-radius:10px;font-size:14px;outline:none;font-family:inherit}
@@ -935,6 +1033,7 @@ footer{border-top:1px solid var(--line);text-align:center;padding:26px;color:var
 <footer>İdman24 — Azərbaycan dilində canlı idman xəbərləri<br>Mənbələr: APA Sport, İdman Xəbər, Report · Xəbərlər birbaşa mənbə saytlardan gətirilir.</footer>
 <div class="modal" id="modal" onclick="if(event.target===this)closeModal()"><div class="modal-box" id="modalBox"></div></div>
 <div class="modal" id="adminModal" onclick="if(event.target===this)closeAdmin()"><div class="modal-box"><div id="adminInner"></div></div></div>
+<div class="dash" id="dash"><aside class="dashnav" id="dashNav"></aside><main class="dashmain" id="dashMain"></main></div>
 <script>
 let CURRENT="Hamısı",SEARCH="",ALL=[],CATS=["Hamısı"],UPDATED=null,PW="";
 const esc=s=>(s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -1069,7 +1168,7 @@ async function loadContacts(){const box=document.getElementById("ctInbox");if(!b
     </div>`).join(""):`<p style="color:var(--muted)">Hələ mesaj yoxdur.</p>`;
   }catch(e){box.innerHTML="Yüklənmədi.";}}
 /* ----- admin (parol qorumalı) ----- */
-function openAdmin(){document.getElementById("adminModal").classList.add("open");PW?adminForm():adminLogin();}
+function openAdmin(){if(PW){dashOpen();}else{document.getElementById("adminModal").classList.add("open");adminLogin();}}
 function closeAdmin(){document.getElementById("adminModal").classList.remove("open");}
 function adminLogin(){document.getElementById("adminInner").innerHTML=`<span class="modal-close" onclick="closeAdmin()">×</span>
   <div class="mbody"><h2 style="margin-top:0">Admin Girişi</h2>
@@ -1080,7 +1179,7 @@ function adminLogin(){document.getElementById("adminInner").innerHTML=`<span cla
   setTimeout(()=>document.getElementById("pw").focus(),50);}
 async function doLogin(){const p=document.getElementById("pw").value;
   const r=await (await fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:p})})).json();
-  if(r.ok){PW=p;adminForm();}else document.getElementById("pwErr").style.display="block";}
+  if(r.ok){PW=p;dashOpen();}else document.getElementById("pwErr").style.display="block";}
 function adminForm(){EDIT_ID=null;const opts=CATS.filter(c=>c!=="Hamısı").map(c=>`<option>${c}</option>`).join("");
   document.getElementById("adminInner").innerHTML=`<span class="modal-close" onclick="closeAdmin()">×</span>
   <div class="mbody"><h2 style="margin-top:0">Öz Xəbərini Əlavə Et</h2>
@@ -1127,8 +1226,84 @@ function editArticle(id){const a=ALL.find(x=>x.id===id);if(!a)return;EDIT_ID=id;
   document.getElementById("aBody").value=a.body||"";
   document.getElementById("aLink").value=a.link||"";
   const sb=document.getElementById("aSubmit");if(sb)sb.textContent="Dəyişikliyi yadda saxla";
-  document.getElementById("adminInner").scrollTop=0;
+  const at=document.getElementById("aTitle");if(at)at.scrollIntoView({behavior:"smooth",block:"center"});
   amsg("Düzəliş rejimi — dəyişib yadda saxlayın (yeni şəkil seçməsəniz köhnəsi qalır)",true);}
+/* ----- Admin Dashboard ----- */
+let DASH=null,DSEC="overview";
+async function dashOpen(){document.getElementById("adminModal").classList.remove("open");
+  document.getElementById("dash").classList.add("open");DSEC="overview";
+  document.getElementById("dashMain").innerHTML='<p style="color:var(--muted)">Yüklənir...</p>';
+  await dashLoad();dashRender();}
+function dashClose(){document.getElementById("dash").classList.remove("open");}
+async function dashLoad(){try{DASH=await (await fetch("/api/dashboard",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:PW})})).json();}catch(e){DASH={ok:false};}}
+function dashNav(s){DSEC=s;dashRender();}
+function dashRender(){const nav=[["overview","📊 İcmal"],["articles","📰 Xəbərlərim"],["stats","📈 Statistika"],["comments","💬 Şərhlər"],["contacts","📩 Mesajlar"],["sources","🌐 Mənbələr"]];
+  document.getElementById("dashNav").innerHTML=`<div class="dlogo"><span>İdman</span>24 · Admin</div>`+
+    nav.map(n=>`<button class="${DSEC===n[0]?'on':''}" onclick="dashNav('${n[0]}')">${n[1]}</button>`).join("")+
+    `<button onclick="dashClose()" style="margin-top:18px;color:var(--accent2)">← Sayta qayıt</button>`;
+  const m=document.getElementById("dashMain");
+  if(DSEC==="overview")m.innerHTML=dashOverview();
+  else if(DSEC==="articles"){m.innerHTML=dashArticles();renderMyList();}
+  else if(DSEC==="stats")m.innerHTML=dashStats();
+  else if(DSEC==="comments")m.innerHTML=dashComments();
+  else if(DSEC==="contacts")m.innerHTML=dashContacts();
+  else if(DSEC==="sources")m.innerHTML=dashSources();
+  m.scrollTop=0;}
+function kpi(k,v,c){return `<div class="kpi"><div class="k">${k}</div><div class="v" style="color:${c||'var(--txt)'}">${v||0}</div></div>`;}
+function dashOverview(){const d=DASH||{},t=d.totals||{};
+  const daily=d.daily||[],max=Math.max(1,...daily.map(x=>x.count));
+  const bars=daily.map(x=>`<div style="flex:1"><div class="bar" style="height:${Math.round(x.count/max*120)}px" title="${x.count}"></div><div class="bl">${(x.date||'').slice(5)}</div></div>`).join("");
+  const top=(d.top||[]).filter(a=>a.views||a.shares).slice(0,6).map(a=>`<tr><td>${esc(a.title||a.id)}</td><td style="text-align:center;color:var(--accent)">${a.views}</td><td style="text-align:center;color:var(--gold)">${a.shares}</td></tr>`).join("");
+  const geo=(d.geo||[]).slice(0,7).map(g=>`<tr><td>${esc(g.loc)}</td><td style="text-align:right;color:var(--accent)">${g.count}</td></tr>`).join("");
+  const rc=(d.recentComments||[]).slice(0,5).map(c=>`<div style="border-bottom:1px solid var(--line);padding:7px 0"><b style="color:var(--accent)">${esc(c.name||'Anonim')}</b> <small style="color:var(--muted)">${fmtTime(c.date)} · ${esc((c.title||'').slice(0,40))}</small><div style="color:#c5d3ec;font-size:13px">${esc(c.text)}</div></div>`).join("");
+  return `<h2>İcmal</h2><div class="sub">Son yeniləmə: ${fmtTime(d.updated)}</div>
+   <div class="kpis">${kpi("Ümumi oxunma",t.views,"var(--accent)")}${kpi("Paylaşım",t.shares,"var(--gold)")}${kpi("Şərhlər",t.comments)}${kpi("Mesajlar",t.messages,"var(--accent2)")}${kpi("Sizin xəbərlər",t.myArticles)}${kpi("Canlı xəbərlər",t.liveArticles)}${kpi("Məkanlar",t.locations)}</div>
+   <div class="panel"><h3>Son 14 gün — oxunma</h3><div class="bars">${bars||'<span style="color:var(--muted)">Məlumat yoxdur</span>'}</div></div>
+   <div class="dgrid">
+     <div class="panel"><h3>Ən çox oxunan</h3><table class="dtable"><thead><tr><th>Xəbər</th><th>Oxunma</th><th>Paylaşım</th></tr></thead><tbody>${top||'<tr><td colspan=3 style="color:var(--muted)">Hələ yoxdur</td></tr>'}</tbody></table></div>
+     <div class="panel"><h3>🌍 Oxucuların yeri</h3><table class="dtable"><tbody>${geo||'<tr><td style="color:var(--muted)">Hələ yoxdur</td></tr>'}</tbody></table></div></div>
+   <div class="panel"><h3>Son şərhlər</h3>${rc||'<span style="color:var(--muted)">Hələ şərh yoxdur</span>'}</div>`;}
+function dashArticles(){const opts=CATS.filter(c=>c!=="Hamısı").map(c=>`<option>${c}</option>`).join("");
+  return `<h2>Xəbərlərim</h2><div class="sub">Öz xəbərlərinizi əlavə edin, redaktə və ya silin.</div>
+   <div class="panel" style="max-width:640px">
+     <div id="amsg" style="display:none;margin-bottom:10px;padding:10px 14px;border-radius:8px"></div>
+     <label>Başlıq *</label><input class="f" id="aTitle" placeholder="Başlıq">
+     <div class="row2"><div><label>Kateqoriya</label><select class="f" id="aCat">${opts}</select></div><div><label>Müəllif</label><input class="f" id="aAuthor" value="Redaksiya"></div></div>
+     <label>Şəkil (kompüterdən yüklə)</label><input class="f" id="aImage" type="file" accept="image/*">
+     <label>Qısa təsvir</label><textarea class="f" id="aSummary" style="min-height:60px"></textarea>
+     <label>Tam mətn</label><textarea class="f" id="aBody"></textarea>
+     <label>Mənbə linki (istəyə bağlı)</label><input class="f" id="aLink" placeholder="https://...">
+     <button class="btn" id="aSubmit" onclick="saveArticle()">Xəbəri yayımla</button></div>
+   <div class="panel"><h3>Əlavə etdiyim xəbərlər</h3><div class="mylist" id="myList"></div></div>`;}
+function dashStats(){const d=DASH||{},items=d.top||[];
+  const catmap={};items.forEach(it=>{const a=ALL.find(x=>x.id===it.id);const c=a?a.category:"Digər";catmap[c]=(catmap[c]||0)+(it.views||0);});
+  const cats=Object.entries(catmap).filter(c=>c[1]).sort((a,b)=>b[1]-a[1]);const cmax=Math.max(1,...cats.map(c=>c[1]));
+  const catbars=cats.map(([c,v])=>`<div style="margin-bottom:9px"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span>${esc(c)}</span><span style="color:var(--accent)">${v}</span></div><div style="background:#0d1525;border-radius:5px;height:9px"><div style="width:${Math.round(v/cmax*100)}%;height:9px;background:var(--accent);border-radius:5px"></div></div></div>`).join("");
+  const rows=items.filter(i=>i.views||i.shares).map(i=>`<tr><td>${esc(i.title||i.id)}</td><td style="text-align:center;color:var(--accent)">${i.views}</td><td style="text-align:center;color:var(--gold)">${i.shares}</td></tr>`).join("");
+  const geo=(d.geo||[]).map(g=>`<tr><td>${esc(g.loc)}</td><td style="text-align:right;color:var(--accent)">${g.count}</td></tr>`).join("");
+  return `<h2>Statistika</h2><div class="sub">Oxunma və paylaşım göstəriciləri</div>
+   <div class="dgrid"><div class="panel"><h3>Fənlər üzrə oxunma</h3>${catbars||'<span style="color:var(--muted)">Yoxdur</span>'}</div>
+     <div class="panel"><h3>🌍 Bütün məkanlar</h3><table class="dtable"><tbody>${geo||'<tr><td style="color:var(--muted)">Yoxdur</td></tr>'}</tbody></table></div></div>
+   <div class="panel"><h3>Xəbərlər üzrə</h3><table class="dtable"><thead><tr><th>Xəbər</th><th>Oxunma</th><th>Paylaşım</th></tr></thead><tbody>${rows||'<tr><td colspan=3 style="color:var(--muted)">Yoxdur</td></tr>'}</tbody></table></div>`;}
+function dashComments(){const list=(DASH||{}).recentComments||[];
+  return `<h2>Şərhlər</h2><div class="sub">Son şərhlər — uyğunsuzu silə bilərsiniz</div>
+   <div class="panel">${list.length?list.map((c,i)=>`<div style="border-bottom:1px solid var(--line);padding:10px 0;display:flex;justify-content:space-between;gap:12px">
+     <div><b style="color:var(--accent)">${esc(c.name||'Anonim')}</b> <small style="color:var(--muted)">${fmtTime(c.date)} · ${esc((c.title||'').slice(0,50))}</small><div style="color:#c5d3ec;font-size:14px;margin-top:3px">${esc(c.text)}</div></div>
+     <button class="del" onclick="delCommentIdx(${i})">Sil</button></div>`).join(""):'<span style="color:var(--muted)">Hələ şərh yoxdur</span>'}</div>`;}
+async function delCommentIdx(i){const c=((DASH||{}).recentComments||[])[i];if(!c||!confirm("Şərh silinsin?"))return;
+  await fetch("/api/comment/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:PW,id:c.id,date:c.date,text:c.text})});
+  await dashLoad();dashRender();}
+function dashContacts(){const list=(DASH||{}).recentContacts||[];
+  return `<h2>Mesajlar</h2><div class="sub">Əlaqə formundan gələn mesajlar</div>
+   <div class="panel">${list.length?list.map(m=>`<div style="border-bottom:1px solid var(--line);padding:12px 0">
+     <div style="display:flex;justify-content:space-between"><b style="color:var(--accent)">${esc(m.name||'Anonim')}</b><small style="color:var(--muted)">${fmtTime(m.date)}</small></div>
+     ${m.phone?`<div style="color:var(--gold);font-size:13px;margin:3px 0">📞 ${esc(m.phone)}</div>`:''}
+     ${m.message?`<p style="color:#c5d3ec;font-size:14px;margin:6px 0;white-space:pre-wrap">${esc(m.message)}</p>`:''}
+     ${m.image?`<a href="${esc(m.image)}" target="_blank" rel="noopener"><img src="${esc(m.image)}" style="max-width:200px;border-radius:8px;margin-top:6px"></a>`:''}</div>`).join(""):'<span style="color:var(--muted)">Hələ mesaj yoxdur</span>'}</div>`;}
+function dashSources(){const d=DASH||{},s=d.sources||[];
+  const rows=s.map(x=>`<tr><td>${esc(x.name)}</td><td style="color:var(--muted)">${esc(x.type||'')}</td><td style="text-align:center">${x.count||0}</td><td style="text-align:center;color:${x.ok?'var(--accent)':'var(--accent2)'}">${x.ok?'✓ işləyir':'✗ problem'}</td></tr>`).join("");
+  return `<h2>Mənbələr</h2><div class="sub">Mənbələrin vəziyyəti · Canlı xəbərlər: ${(d.totals||{}).liveArticles||0} · Son yeniləmə: ${fmtTime(d.updated)}</div>
+   <div class="panel"><table class="dtable"><thead><tr><th>Mənbə</th><th>Növ</th><th>Sayı</th><th>Status</th></tr></thead><tbody>${rows||'<tr><td colspan=4 style="color:var(--muted)">Yoxdur</td></tr>'}</tbody></table></div>`;}
 function amsg(t,ok){const m=document.getElementById("amsg");m.style.display="block";m.textContent=t;
   m.style.background=ok?"rgba(0,230,168,.15)":"rgba(255,61,113,.15)";m.style.color=ok?"var(--accent)":"var(--accent2)";
   setTimeout(()=>{m.style.display="none";},4000);}
