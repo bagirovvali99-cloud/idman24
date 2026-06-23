@@ -48,6 +48,7 @@ CONTACTS_FILE = os.path.join(DATA_DIR, "idman24_contacts.json")
 GEO_FILE = os.path.join(DATA_DIR, "idman24_geo.json")
 DAILY_FILE = os.path.join(DATA_DIR, "idman24_daily.json")
 AD_FILE = os.path.join(DATA_DIR, "idman24_ad.json")
+POLL_FILE = os.path.join(DATA_DIR, "idman24_poll.json")
 # Şərhlərdə qadağan sözlər (hostinqdə IDMAN24_BANNED=söz1,söz2 ilə təyin edin)
 BANNED_WORDS = [w.strip() for w in os.environ.get("IDMAN24_BANNED", "").lower().split(",") if w.strip()]
 # Əlaqə mesajları üçün e-poçt (hostinqdə dəyişən kimi qoyulur, kodda görünmür):
@@ -432,6 +433,23 @@ def save_ad():
     except Exception as e:
         print("[save_ad]", e)
 
+# ---- Sorğu (poll) ----
+POLL = {"question": "", "options": [], "active": False}
+
+def load_poll():
+    global POLL
+    try:
+        if os.path.exists(POLL_FILE):
+            POLL = json.load(open(POLL_FILE, encoding="utf-8")) or POLL
+    except Exception as e:
+        print("[load_poll]", e)
+
+def save_poll():
+    try:
+        json.dump(POLL, open(POLL_FILE, "w", encoding="utf-8"), ensure_ascii=False)
+    except Exception as e:
+        print("[save_poll]", e)
+
 def rss_xml():
     with _lock:
         items = (load_manual() + LIVE)[:40]
@@ -765,6 +783,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"updated": UPDATED, "categories": CATEGORIES, "items": items})
         if u.path == "/api/ad":
             return self._send(200, AD)
+        if u.path == "/api/poll":
+            return self._send(200, POLL)
         if u.path == "/rss.xml":
             return self._send(200, rss_xml(), "application/rss+xml; charset=utf-8")
         if u.path == "/sitemap.xml":
@@ -1029,6 +1049,27 @@ class H(BaseHTTPRequestHandler):
             AD["active"] = bool(body.get("active"))
             save_ad()
             return self._send(200, {"ok": True})
+        if u.path == "/api/poll/vote":
+            try:
+                i = int(body.get("i"))
+            except Exception:
+                return self._send(400, {"ok": False})
+            with _slock:
+                if POLL.get("active") and 0 <= i < len(POLL.get("options", [])):
+                    POLL["options"][i]["votes"] = POLL["options"][i].get("votes", 0) + 1
+                    save_poll()
+            return self._send(200, {"ok": True, "poll": POLL})
+        if u.path == "/api/poll/set":
+            if body.get("password") != ADMIN_PASSWORD:
+                return self._send(401, {"ok": False})
+            opts = [{"text": (t or "").strip()[:120], "votes": 0}
+                    for t in (body.get("options") or []) if (t or "").strip()][:6]
+            with _slock:
+                POLL["question"] = (body.get("question") or "").strip()[:200]
+                POLL["options"] = opts
+                POLL["active"] = bool(body.get("active")) and len(opts) >= 2
+                save_poll()
+            return self._send(200, {"ok": True})
         return self._send(404, {"error": "not found"})
 
 # ============================ START ============================
@@ -1040,6 +1081,7 @@ def main():
     load_daily()
     load_contacts()
     load_ad()
+    load_poll()
     print("\n  İdman24 başlayır...")
     if LIVE: print(f"  {len(LIVE)} xəbər keşdən dərhal yükləndi.")
     threading.Thread(target=refresher, daemon=True).start()
@@ -1149,6 +1191,11 @@ main{max-width:1240px;margin:0 auto;padding:24px 20px 60px}
 .related .r:hover .rt{color:var(--accent)}
 .related .rimg{width:74px;height:54px;border-radius:8px;background-size:cover;background-position:center;background-color:#16223c;flex-shrink:0}
 .related .rt{font-size:13.5px;font-weight:600;line-height:1.35}
+.pollbox{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:24px}
+.pollq{font-weight:700;font-size:16px;margin-bottom:14px}
+.pollopt{display:block;width:100%;text-align:left;background:#0d1525;border:1px solid var(--line);color:var(--txt);padding:11px 14px;border-radius:10px;margin-bottom:8px;cursor:pointer;font-size:14px}
+.pollopt:hover{border-color:var(--accent);color:var(--accent)}
+.favchip{background:var(--card);border:1px solid var(--line);padding:9px 14px;border-radius:30px;cursor:pointer;font-size:14px;display:inline-flex;align-items:center;gap:6px}
 .dash{position:fixed;inset:0;background:#0a0e17;z-index:150;display:none;grid-template-columns:228px 1fr}
 .dash.open{display:grid}
 .dashnav{background:#0f1626;border-right:1px solid var(--line);padding:18px 12px;overflow:auto}
@@ -1201,7 +1248,9 @@ footer{border-top:1px solid var(--line);text-align:center;padding:26px;color:var
 <div class="modal" id="adminModal" onclick="if(event.target===this)closeAdmin()"><div class="modal-box"><div id="adminInner"></div></div></div>
 <div class="dash" id="dash"><aside class="dashnav" id="dashNav"></aside><main class="dashmain" id="dashMain"></main></div>
 <script>
-let CURRENT="Hamısı",SEARCH="",ALL=[],CATS=["Hamısı"],UPDATED=null,PW="",AD_DATA=null;
+let CURRENT="Hamısı",SEARCH="",ALL=[],CATS=["Hamısı"],UPDATED=null,PW="",AD_DATA=null,POLL_DATA=null,FAV_EDIT=false;
+let FAVS=[];try{FAVS=JSON.parse(localStorage.getItem("idman24_favs")||"[]");}catch(e){FAVS=[];}
+function saveFavs(){try{localStorage.setItem("idman24_favs",JSON.stringify(FAVS));}catch(e){}}
 const esc=s=>(s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function fmtTime(iso){if(!iso)return"";const d=new Date(iso),diff=(Date.now()-d)/1000;if(isNaN(diff))return"";
  if(diff<60)return"indicə";if(diff<3600)return Math.floor(diff/60)+" dəq əvvəl";if(diff<86400)return Math.floor(diff/3600)+" saat əvvəl";
@@ -1210,11 +1259,12 @@ async function load(){
   try{const d=await (await fetch("/api/news")).json();ALL=d.items||[];CATS=d.categories||CATS;UPDATED=d.updated;}
   catch(e){document.getElementById("status").textContent="Server ilə əlaqə yoxdur.";return;}
   try{AD_DATA=await (await fetch("/api/ad")).json();}catch(e){AD_DATA=null;}
+  try{POLL_DATA=await (await fetch("/api/poll")).json();}catch(e){POLL_DATA=null;}
   document.getElementById("status").textContent=`${ALL.length} xəbər · yeniləndi ${fmtTime(UPDATED)}`;
   buildTabs();render();buildTicker();
 }
 async function hardRefresh(){document.getElementById("status").textContent="Yenilənir...";await fetch("/api/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});load();}
-function buildTabs(){document.getElementById("tabs").innerHTML=[...CATS,"Əlaqə"].map(c=>`<button class="tab ${c===CURRENT?'active':''}" onclick="selectCat('${c}')">${c}</button>`).join("");}
+function buildTabs(){const list=[CATS[0],"⭐ Mənim",...CATS.slice(1),"Əlaqə"];document.getElementById("tabs").innerHTML=list.map(c=>`<button class="tab ${c===CURRENT?'active':''}" onclick="selectCat('${c}')">${c}</button>`).join("");}
 function current(){let i=[...ALL];
   if(CURRENT!=="Hamısı")i=i.filter(x=>x.category===CURRENT);
   if(SEARCH){const q=SEARCH.toLowerCase();i=i.filter(x=>(x.title+" "+x.summary).toLowerCase().includes(q));}return i;}
@@ -1223,6 +1273,7 @@ function srcLine(i){return `<span class="src-name">${esc(i.source)}</span> · ${
 function buildTicker(){const tk=document.querySelector('.ticker');if(SEARCH||CURRENT!=="Hamısı"){tk.style.display='none';return;}
   tk.style.display='block';const t=ALL.slice(0,10).map(i=>`<span>${esc(i.title)}</span>`).join("");document.getElementById("ticker").innerHTML="<b>SON DƏQİQƏ</b>"+t+t;}
 function render(){if(CURRENT==="Əlaqə"){document.getElementById("hero").innerHTML="";renderContact();return;}
+  if(CURRENT==="⭐ Mənim"){document.getElementById("hero").innerHTML="";renderPersonal();return;}
   const items=current(),hero=document.getElementById("hero"),content=document.getElementById("content");
   if(!items.length){hero.innerHTML="";content.innerHTML=`<div class="empty">Bu kateqoriyada xəbər tapılmadı.</div>`;return;}
   let rest=items;
@@ -1238,6 +1289,7 @@ function render(){if(CURRENT==="Əlaqə"){document.getElementById("hero").innerH
   let prefix="";
   if(CURRENT==="Hamısı"&&!SEARCH){
     if(AD_DATA&&AD_DATA.active&&AD_DATA.image){prefix+=`<a class="adbanner" href="${esc(AD_DATA.link||'#')}" target="_blank" rel="noopener"><img src="${esc(AD_DATA.image)}" alt="reklam"><span class="adtag">Reklam</span></a>`;}
+    prefix+=pollHtml();
     const trend=[...ALL].filter(x=>x.views>0).sort((a,b)=>b.views-a.views).slice(0,5);
     if(trend.length>=3){prefix+=`<div class="section-h"><h2>🔥 Ən çox oxunan</h2></div><div class="trend">${trend.map((i,n)=>`<div class="tcard" onclick='openModal("${i.id}")'><span class="tnum">${n+1}</span><div><div class="tt">${esc(i.title)}</div><small style="color:var(--muted)">${esc(i.source)} · 👁 ${i.views}</small></div></div>`).join("")}</div>`;}
   }
@@ -1246,6 +1298,36 @@ function render(){if(CURRENT==="Əlaqə"){document.getElementById("hero").innerH
       <div class="thumb ${i.image?'':'no-img'}" ${i.image?`style="background-image:url('${esc(i.image)}')"`:''}><span class="tag">${badge(i)}</span></div>
       <div class="c-body"><h3>${esc(i.title)}</h3>${i.summary?`<p>${esc(i.summary)}</p>`:""}
         <div class="foot"><span style="color:var(--accent)">${esc(i.source)}</span><span>${i.views?`👁 ${i.views} · `:""}${fmtTime(i.date)}</span></div></div></div>`).join("")}</div>`;}
+function cardHtml(i){return `<div class="card" onclick='openModal("${i.id}")'>
+  <div class="thumb ${i.image?'':'no-img'}" ${i.image?`style="background-image:url('${esc(i.image)}')"`:''}><span class="tag">${badge(i)}</span></div>
+  <div class="c-body"><h3>${esc(i.title)}</h3>${i.summary?`<p>${esc(i.summary)}</p>`:""}
+    <div class="foot"><span style="color:var(--accent)">${esc(i.source)}</span><span>${i.views?`👁 ${i.views} · `:""}${fmtTime(i.date)}</span></div></div></div>`;}
+function pollHtml(){const p=POLL_DATA;if(!p||!p.active||!(p.options&&p.options.length>=2))return"";
+  const total=p.options.reduce((s,o)=>s+(o.votes||0),0);
+  const voted=localStorage.getItem("idman24_pollvoted")===p.question;
+  let inner;
+  if(voted){inner=p.options.map(o=>{const pct=total?Math.round((o.votes||0)/total*100):0;
+    return `<div style="margin-bottom:9px"><div style="display:flex;justify-content:space-between;font-size:13.5px;margin-bottom:4px"><span>${esc(o.text)}</span><span style="color:var(--accent);font-weight:700">${pct}%</span></div><div style="background:#0d1525;border-radius:6px;height:10px;overflow:hidden"><div style="width:${pct}%;height:10px;background:var(--accent)"></div></div></div>`;}).join("")
+    +`<div style="color:var(--muted);font-size:12px;margin-top:8px">${total} səs · təşəkkürlər</div>`;}
+  else{inner=p.options.map((o,i)=>`<button class="pollopt" onclick="votePoll(${i})">${esc(o.text)}</button>`).join("");}
+  return `<div class="pollbox"><div class="pollq">🗳️ ${esc(p.question)}</div>${inner}</div>`;}
+async function votePoll(i){const p=POLL_DATA;if(!p)return;
+  try{const r=await (await fetch("/api/poll/vote",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({i})})).json();
+    if(r.poll)POLL_DATA=r.poll;}catch(e){}
+  try{localStorage.setItem("idman24_pollvoted",p.question);}catch(e){}render();}
+function renderPersonal(){const content=document.getElementById("content");
+  if(!FAVS.length||FAV_EDIT){content.innerHTML=favPicker();return;}
+  const items=ALL.filter(x=>FAVS.includes(x.category));
+  content.innerHTML=`<div class="section-h"><h2>⭐ Mənim lentim</h2></div>
+    <div style="margin-bottom:16px"><button class="refresh" onclick="editFavs()">Fənləri dəyiş</button></div>
+    <div class="grid">${items.length?items.map(i=>cardHtml(i)).join(""):'<p style="color:var(--muted)">Seçdiyiniz fənlər üzrə hələ xəbər yoxdur.</p>'}</div>`;}
+function favPicker(){const cats=CATS.filter(c=>c!=="Hamısı");
+  return `<div class="section-h"><h2>⭐ Mənim lentim</h2></div>
+   <p style="color:var(--muted);margin-bottom:16px;max-width:560px">Maraqlandığınız idman fənlərini seçin — əsas səhifədə yalnız onların xəbərlərini görəcəksiniz. Seçim bu brauzerdə yadda saxlanılır.</p>
+   <div style="display:flex;flex-wrap:wrap;gap:9px;margin-bottom:20px">${cats.map(c=>`<label class="favchip"><input type="checkbox" value="${esc(c)}" ${FAVS.includes(c)?'checked':''}>${esc(c)}</label>`).join("")}</div>
+   <button class="refresh" onclick="saveFavsFromPicker()">Yadda saxla</button>`;}
+function saveFavsFromPicker(){FAVS=[...document.querySelectorAll('#content input[type=checkbox]:checked')].map(c=>c.value);FAV_EDIT=false;saveFavs();render();}
+function editFavs(){FAV_EDIT=true;render();}
 function find(id){return ALL.find(i=>i.id===id);}
 function relatedHtml(a){const rel=ALL.filter(x=>x.category===a.category&&x.id!==a.id).slice(0,4);
   if(!rel.length)return"";
@@ -1418,7 +1500,7 @@ async function dashOpen(){document.getElementById("adminModal").classList.remove
 function dashClose(){document.getElementById("dash").classList.remove("open");}
 async function dashLoad(){try{DASH=await (await fetch("/api/dashboard",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:PW})})).json();}catch(e){DASH={ok:false};}}
 function dashNav(s){DSEC=s;dashRender();}
-function dashRender(){const nav=[["overview","📊 İcmal"],["articles","📰 Xəbərlərim"],["stats","📈 Statistika"],["comments","💬 Şərhlər"],["contacts","📩 Mesajlar"],["ad","📢 Reklam"],["sources","🌐 Mənbələr"]];
+function dashRender(){const nav=[["overview","📊 İcmal"],["articles","📰 Xəbərlərim"],["poll","🗳️ Sorğu"],["stats","📈 Statistika"],["comments","💬 Şərhlər"],["contacts","📩 Mesajlar"],["ad","📢 Reklam"],["sources","🌐 Mənbələr"]];
   document.getElementById("dashNav").innerHTML=`<div class="dlogo"><span>İdman</span>24 · Admin</div>`+
     nav.map(n=>`<button class="${DSEC===n[0]?'on':''}" onclick="dashNav('${n[0]}')">${n[1]}</button>`).join("")+
     `<button onclick="dashClose()" style="margin-top:18px;color:var(--accent2)">← Sayta qayıt</button>`+
@@ -1430,8 +1512,27 @@ function dashRender(){const nav=[["overview","📊 İcmal"],["articles","📰 X�
   else if(DSEC==="comments")m.innerHTML=dashComments();
   else if(DSEC==="contacts")m.innerHTML=dashContacts();
   else if(DSEC==="ad")m.innerHTML=dashAd();
+  else if(DSEC==="poll")m.innerHTML=dashPoll();
   else if(DSEC==="sources")m.innerHTML=dashSources();
   m.scrollTop=0;}
+function dashPoll(){const p=POLL_DATA||{};const opts=(p.options||[]).map(o=>o.text).join("\n");
+  const total=(p.options||[]).reduce((s,o)=>s+(o.votes||0),0);
+  const results=(p.options||[]).length?`<div class="panel" style="max-width:620px;margin-top:14px"><h3 style="margin:0 0 10px">Cari nəticələr (${total} səs)</h3>`+
+    p.options.map(o=>{const pct=total?Math.round((o.votes||0)/total*100):0;return `<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;font-size:13.5px;margin-bottom:3px"><span>${esc(o.text)}</span><span style="color:var(--accent)">${o.votes||0} · ${pct}%</span></div><div style="background:#0d1525;border-radius:6px;height:9px;overflow:hidden"><div style="width:${pct}%;height:9px;background:var(--accent)"></div></div></div>`;}).join("")+`</div>`:"";
+  return `<h2>Sorğu (Poll)</h2><div class="sub">Oxucular əsas səhifədə səs verir. Yeni sorğu yaratdıqda səslər sıfırlanır.</div>
+   <div class="panel" style="max-width:620px">
+     <div id="pollMsg" style="display:none;margin-bottom:10px;padding:10px 14px;border-radius:8px"></div>
+     <label>Sual</label><input class="f" id="pollQ" placeholder="Sizcə kim qalib gələcək?" value="${esc(p.question||'')}">
+     <label>Cavablar (hər sətirdə bir cavab, 2-6 ədəd)</label><textarea class="f" id="pollOpts" rows="5" placeholder="Qarabağ&#10;Neftçi&#10;Heç-heçə">${esc(opts)}</textarea>
+     <label style="display:flex;align-items:center;gap:8px;margin-top:14px;color:var(--txt)"><input type="checkbox" id="pollActive" ${p.active?'checked':''} style="width:auto"> Sorğunu göstər (aktiv)</label>
+     <button class="btn" onclick="savePoll()">Yadda saxla</button></div>${results}`;}
+function pollMsg(t,ok){const m=document.getElementById("pollMsg");if(!m)return;m.style.display="block";m.textContent=t;m.style.background=ok?"rgba(0,230,168,.15)":"rgba(255,61,113,.15)";m.style.color=ok?"var(--accent)":"var(--accent2)";setTimeout(()=>{m.style.display="none";},4000);}
+async function savePoll(){const q=document.getElementById("pollQ").value.trim();
+  const options=document.getElementById("pollOpts").value.split("\n").map(s=>s.trim()).filter(Boolean);
+  if(options.length<2){pollMsg("Ən azı 2 cavab lazımdır",false);return;}
+  const payload={password:PW,question:q,options,active:document.getElementById("pollActive").checked};
+  const r=await (await fetch("/api/poll/set",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})).json();
+  if(r.ok){pollMsg("✓ Yadda saxlanıldı",true);try{POLL_DATA=await (await fetch("/api/poll")).json();}catch(e){}dashRender();}else pollMsg("Xəta baş verdi",false);}
 function dashAd(){const a=AD_DATA||{};
   return `<h2>Reklam</h2><div class="sub">Saytın əsas səhifəsində göstəriləcək banner</div>
    <div class="panel" style="max-width:620px">
@@ -1533,7 +1634,7 @@ function renderMyList(){const mine=ALL.filter(i=>i.manual);
 async function pinArticle(id){await fetch("/api/article/pin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:PW,id})});await load();renderMyList();}
 async function delArticle(id){if(!confirm("Silinsin?"))return;
   await fetch("/api/article/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:PW,id})});await load();renderMyList();}
-function selectCat(c){CURRENT=c;SEARCH="";document.getElementById("q").value="";window.scrollTo({top:0,behavior:"smooth"});buildTabs();render();buildTicker();}
+function selectCat(c){CURRENT=c;SEARCH="";if(c!=="⭐ Mənim")FAV_EDIT=false;document.getElementById("q").value="";window.scrollTo({top:0,behavior:"smooth"});buildTabs();render();buildTicker();}
 let st;function onSearch(){SEARCH=document.getElementById("q").value;clearTimeout(st);st=setTimeout(()=>{render();buildTicker();},250);}
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){closeModal();closeAdmin();}});
 restoreAdminSession();load().then(openFromHash);window.addEventListener("hashchange",openFromHash);setInterval(load,60000);
