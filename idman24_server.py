@@ -1362,8 +1362,31 @@ main{max-width:1240px;margin:0 auto;padding:24px 20px 60px}
 .jwin .jn{color:var(--accent);font-weight:700}.jwin .jsc{color:var(--accent)}
 .jwin .jn:after{content:" ✓";color:var(--accent)}
 .caldate small{display:block;font-size:9px;color:var(--muted);font-weight:600}
+.judogrid{display:grid;grid-template-columns:1.15fr 1fr;gap:16px;margin-bottom:22px}
+.judogrid .judopanel{margin-bottom:0}
+#judoResults{max-height:340px;overflow-y:auto;padding-right:4px}
+#judoCal{max-height:340px;overflow-y:auto;padding-right:4px}
+#judoResults::-webkit-scrollbar,#judoCal::-webkit-scrollbar{width:6px}
+#judoResults::-webkit-scrollbar-thumb,#judoCal::-webkit-scrollbar-thumb{background:var(--line);border-radius:6px}
+@media(max-width:760px){.judogrid{grid-template-columns:1fr}#judoResults,#judoCal{max-height:300px}}
 .judopanel{background:linear-gradient(160deg,#101a30,#0c1424);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:14px;padding:18px;margin-bottom:22px}
-.jph{display:flex;align-items:baseline;gap:10px;margin-bottom:6px}.jph h2{margin:0;font-size:18px}
+.jph{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;flex-wrap:wrap}.jph h2{margin:0;font-size:18px;display:inline}
+.vtoggle{display:flex;gap:4px}
+.vtoggle button{background:#0d1525;border:1px solid var(--line);color:var(--muted);font-size:11.5px;padding:5px 11px;border-radius:7px;cursor:pointer}
+.vtoggle button.von{background:var(--accent);color:#04231a;border-color:var(--accent);font-weight:700}
+.bracket{display:flex;gap:12px;overflow-x:auto;padding-bottom:8px;align-items:stretch}
+.bcol{min-width:172px;flex:0 0 auto;display:flex;flex-direction:column}
+.bcol h4{margin:0 0 8px;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--accent)}
+.bextra h4{color:var(--accent2)}
+.bmatches{flex:1;display:flex;flex-direction:column;justify-content:space-around;gap:10px}
+.bmatch{background:#0d1525;border:1px solid var(--line);border-radius:9px;padding:7px 9px;position:relative}
+.bmatch.blive{border-color:rgba(255,61,113,.5)}
+.brow{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12.5px;padding:2px 0}
+.brow span{display:flex;align-items:center;gap:6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.brow small{color:var(--muted);font-size:10px}
+.brow b{color:var(--muted);font-variant-numeric:tabular-nums;font-weight:700}
+.bwin{color:var(--accent);font-weight:700}.bwin b{color:var(--accent)}
+.blivebadge{position:absolute;top:-7px;right:6px;background:var(--accent2);color:#04231a;font-size:8.5px;font-weight:800;padding:1px 5px;border-radius:10px}
 .jphs{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
 .agefilter{display:flex;flex-wrap:wrap;gap:8px}
 .agebtn{background:#0d1525;border:1px solid var(--line);color:var(--muted);padding:7px 14px;border-radius:30px;cursor:pointer;font-size:13px}
@@ -1505,11 +1528,12 @@ function favPicker(){const cats=CATS.filter(c=>c!=="Hamısı");
    <button class="refresh" onclick="saveFavsFromPicker()">Yadda saxla</button>`;}
 function saveFavsFromPicker(){FAVS=[...document.querySelectorAll('#content input[type=checkbox]:checked')].map(c=>c.value);FAV_EDIT=false;saveFavs();render();}
 function editFavs(){FAV_EDIT=true;render();}
-let JUDO={comps:null,cats:[],cid:"",wid:"",t:null};
+let JUDO={comps:null,cats:[],cid:"",wid:"",t:null,view:"bracket",items:[]};
 let JCAL={age:"all"};
 function judoPanelHtml(){return `<div class="judopanel">
-   <div class="jph"><h2>🥋 Canlı nəticələr</h2><span class="jphs">IJF JudoBase</span></div>
-   <p style="color:var(--muted);margin:0 0 12px;font-size:13.5px">Yarışı və çəki dərəcəsini seçin — canlı görüşlər yuxarıda, hər 30 saniyədə yenilənir.</p>
+   <div class="jph"><div><h2>🥋 Canlı nəticələr</h2> <span class="jphs">IJF JudoBase</span></div>
+     <div class="vtoggle"><button id="vBr" class="${JUDO.view!=='list'?'von':''}" onclick="judoSetView('bracket')">Cədvəl</button><button id="vLi" class="${JUDO.view==='list'?'von':''}" onclick="judoSetView('list')">Siyahı</button></div></div>
+   <p style="color:var(--muted);margin:8px 0 12px;font-size:13.5px">Yarışı və çəki dərəcəsini seçin — finala qədər şəbəkə (draw) görünür, canlı görüşlər hər 30 saniyədə yenilənir.</p>
    <div class="judosel">
      <select id="judoComp" onchange="judoPickComp()"><option>Yüklənir...</option></select>
      <select id="judoWeight" onchange="judoPickWeight()"><option>—</option></select>
@@ -1539,7 +1563,7 @@ function renderCudo(items){document.getElementById("hero").innerHTML="";
   const news=items.length
     ?`<div class="section-h"><h2>Cüdo xəbərləri</h2></div><div class="grid">${items.map(cardHtml).join("")}</div>`
     :`<div class="empty" style="margin-top:18px">Hələ cüdo xəbəri yoxdur.</div>`;
-  document.getElementById("content").innerHTML=judoPanelHtml()+judoCalHtml()+news;
+  document.getElementById("content").innerHTML=`<div class="judogrid">${judoPanelHtml()}${judoCalHtml()}</div>`+news;
   judoInit();judoCalLoad();}
 async function judoInit(){
   if(!JUDO.comps){try{JUDO.comps=((await (await fetch("/api/judo/competitions")).json()).items)||[];}catch(e){JUDO.comps=[];}}
@@ -1559,9 +1583,32 @@ async function judoLoadContests(){const box=document.getElementById("judoResults
   box.innerHTML='<div class="loader" style="padding:24px"><div class="spin"></div></div>';
   let items=[];try{items=((await (await fetch(`/api/judo/contests?comp=${encodeURIComponent(JUDO.cid)}&weight=${encodeURIComponent(JUDO.wid)}`)).json()).items)||[];}catch(e){}
   if(CURRENT!=="Cüdo")return;
-  if(!items.length){box.innerHTML='<p style="color:var(--muted)">Bu çəkidə hələ görüş yoxdur.</p>';return;}
-  box.innerHTML=items.map(judoRow).join("");
+  JUDO.items=items;judoRenderResults();
   if(items.some(x=>!x.finished)){JUDO.t=setTimeout(()=>{if(CURRENT==="Cüdo")judoLoadContests();},30000);}}
+function judoRenderResults(){const box=document.getElementById("judoResults");if(!box)return;
+  const items=JUDO.items||[];
+  if(!items.length){box.innerHTML='<p style="color:var(--muted)">Bu çəkidə hələ görüş yoxdur.</p>';return;}
+  box.innerHTML=JUDO.view==="list"?items.map(judoRow).join(""):bracketHtml(items);}
+function judoSetView(v){JUDO.view=v;const a=document.getElementById("vBr"),b=document.getElementById("vLi");
+  if(a)a.classList.toggle("von",v==="bracket");if(b)b.classList.toggle("von",v==="list");judoRenderResults();}
+function roundKey(n){const s=(n||"").toLowerCase().replace(/[^a-z0-9]/g,"");
+  if(s.includes("repech"))return"rep";if(s.includes("bronze"))return"bronze";
+  if(s.includes("64"))return"r64";if(s.includes("32"))return"r32";if(s.includes("16"))return"r16";
+  if(s.includes("quarter"))return"qf";if(s.includes("semi"))return"sf";
+  if(s.includes("final"))return"final";return"other";}
+const RLAB={r64:"1/32 final",r32:"1/16 final",r16:"1/8 final",qf:"Çərək final",sf:"Yarımfinal",final:"Final",rep:"Repesaj",bronze:"Bürünc medal",other:"Digər"};
+function bMatch(c){const live=!c.finished;
+  return `<div class="bmatch ${live?'blive':''}">
+    <div class="brow ${c.winner==='w'?'bwin':''}"><span><i class="gi w"></i>${esc(c.white||'—')}${c.cw?` <small>${esc(c.cw)}</small>`:''}</span><b>${esc(c.sw)}</b></div>
+    <div class="brow ${c.winner==='b'?'bwin':''}"><span><i class="gi b"></i>${esc(c.blue||'—')}${c.cb?` <small>${esc(c.cb)}</small>`:''}</span><b>${esc(c.sb)}</b></div>
+    ${live?'<span class="blivebadge">CANLI</span>':''}</div>`;}
+function bracketHtml(items){const g={};items.forEach(c=>{const k=roundKey(c.round);(g[k]=g[k]||[]).push(c);});
+  const order=["r64","r32","r16","qf","sf","final","rep","bronze","other"];
+  let h='<div class="bracket">';let any=false;
+  order.forEach(k=>{if(!g[k])return;any=true;const ex=(k==="rep"||k==="bronze")?"bextra":"";
+    h+=`<div class="bcol ${ex}"><h4>${RLAB[k]}</h4><div class="bmatches">${g[k].map(bMatch).join("")}</div></div>`;});
+  h+='</div>';
+  return any?h:'<p style="color:var(--muted)">Cədvəl məlumatı yoxdur.</p>';}
 function judoSide(name,country,score,win,shido,color){return `<div class="js ${win?'jwin':''}"><span class="jn"><i class="gi ${color}"></i>${esc(name||'—')}${country?` <small>${esc(country)}</small>`:''}</span><span class="jsc">${esc(score)}${shido?` <i class="shi">${shido}</i>`:''}</span></div>`;}
 function judoRow(c){const live=!c.finished;
   return `<div class="jrow ${live?'jlivebox':''}"><div class="jmeta">${live?'<span class="jlive">CANLI</span>':''}${c.round?`<span>${esc(c.round)}</span>`:''}${c.gs?'<span>Qızıl Hesab</span>':''}</div>
