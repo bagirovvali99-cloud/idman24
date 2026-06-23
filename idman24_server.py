@@ -47,6 +47,9 @@ STATS_FILE = os.path.join(DATA_DIR, "idman24_stats.json")
 CONTACTS_FILE = os.path.join(DATA_DIR, "idman24_contacts.json")
 GEO_FILE = os.path.join(DATA_DIR, "idman24_geo.json")
 DAILY_FILE = os.path.join(DATA_DIR, "idman24_daily.json")
+AD_FILE = os.path.join(DATA_DIR, "idman24_ad.json")
+# Şərhlərdə qadağan sözlər (hostinqdə IDMAN24_BANNED=söz1,söz2 ilə təyin edin)
+BANNED_WORDS = [w.strip() for w in os.environ.get("IDMAN24_BANNED", "").lower().split(",") if w.strip()]
 # Əlaqə mesajları üçün e-poçt (hostinqdə dəyişən kimi qoyulur, kodda görünmür):
 GMAIL_USER = os.environ.get("GMAIL_USER", "")            # göndərən gmail
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")  # gmail "app password"
@@ -412,6 +415,43 @@ def bump_daily():
                 DAILY.pop(k, None)
         save_daily()
 
+# ---- Reklam (banner) ----
+AD = {"image": "", "link": "", "active": False}
+
+def load_ad():
+    global AD
+    try:
+        if os.path.exists(AD_FILE):
+            AD = json.load(open(AD_FILE, encoding="utf-8")) or AD
+    except Exception as e:
+        print("[load_ad]", e)
+
+def save_ad():
+    try:
+        json.dump(AD, open(AD_FILE, "w", encoding="utf-8"), ensure_ascii=False)
+    except Exception as e:
+        print("[save_ad]", e)
+
+def rss_xml():
+    with _lock:
+        items = (load_manual() + LIVE)[:40]
+    parts = ['<?xml version="1.0" encoding="UTF-8"?>',
+             '<rss version="2.0"><channel>',
+             '<title>İdman24 - Canlı İdman Xəbərləri</title>',
+             '<link>https://idman24.com</link>',
+             '<description>Azərbaycan dilində canlı idman xəbərləri</description>',
+             '<language>az</language>']
+    for it in items:
+        link = it.get("link") or "https://idman24.com"
+        title = html.escape(it.get("title", ""))
+        desc = html.escape(it.get("summary", ""))
+        parts.append("<item><title>%s</title><link>%s</link><description>%s</description>"
+                     "<category>%s</category><pubDate>%s</pubDate></item>"
+                     % (title, html.escape(link), desc, html.escape(it.get("category", "")),
+                        it.get("date", "")))
+    parts.append("</channel></rss>")
+    return "".join(parts)
+
 # ---- Əlaqə mesajları ----
 _ctlock = threading.Lock()
 CONTACTS = []
@@ -669,9 +709,36 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, PAGE, "text/html; charset=utf-8")
         if u.path == "/api/news":
             with _lock:
-                items = load_manual() + LIVE
-                items.sort(key=lambda x: (not x.get("manual", False),))
-                return self._send(200, {"updated": UPDATED, "categories": CATEGORIES, "items": items})
+                items = load_manual() + list(LIVE)
+            with _slock:
+                for it in items:
+                    it["views"] = STATS.get(it["id"], {}).get("views", 0)
+            items.sort(key=lambda x: (not x.get("pinned", False), not x.get("manual", False)))
+            return self._send(200, {"updated": UPDATED, "categories": CATEGORIES, "items": items})
+        if u.path == "/api/ad":
+            return self._send(200, AD)
+        if u.path == "/rss.xml":
+            return self._send(200, rss_xml(), "application/rss+xml; charset=utf-8")
+        if u.path == "/manifest.json":
+            return self._send(200, {"name": "İdman24", "short_name": "İdman24",
+                "start_url": "/", "display": "standalone", "background_color": "#0a0e17",
+                "theme_color": "#0a0e17",
+                "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}]})
+        if u.path == "/icon.svg":
+            svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
+                   '<rect width="512" height="512" rx="96" fill="#0a0e17"/>'
+                   '<circle cx="256" cy="256" r="150" fill="#00e6a8"/>'
+                   '<circle cx="210" cy="210" r="46" fill="#fff"/></svg>')
+            return self._send(200, svg, "image/svg+xml")
+        if u.path == "/sw.js":
+            sw = ("const C='idman24-v1';"
+                  "self.addEventListener('install',e=>{self.skipWaiting();});"
+                  "self.addEventListener('activate',e=>{self.clients.claim();});"
+                  "self.addEventListener('fetch',e=>{if(e.request.method!=='GET')return;"
+                  "e.respondWith(fetch(e.request).then(r=>{const c=r.clone();"
+                  "caches.open(C).then(ca=>ca.put(e.request,c));return r;})"
+                  ".catch(()=>caches.match(e.request)));});")
+            return self._send(200, sw, "application/javascript; charset=utf-8")
         if u.path == "/api/article":
             url = parse_qs(u.query).get("url", [""])[0]
             return self._send(200, enrich(url))
@@ -715,6 +782,9 @@ class H(BaseHTTPRequestHandler):
             name = ((body.get("name") or "").strip()[:40]) or "Anonim"
             if not aid or not text:
                 return self._send(400, {"ok": False, "error": "Şərh boş ola bilməz"})
+            low = text.lower()
+            if any(b in low for b in BANNED_WORDS):
+                return self._send(400, {"ok": False, "error": "Şərhdə qadağan olunmuş söz var"})
             with _clock:
                 COMMENTS.setdefault(aid, []).append(
                     {"name": name, "text": text, "date": datetime.now(timezone.utc).isoformat()})
@@ -878,6 +948,25 @@ class H(BaseHTTPRequestHandler):
             items = [i for i in load_manual() if i["id"] != body.get("id")]
             save_manual(items)
             return self._send(200, {"ok": True})
+        if u.path == "/api/article/pin":
+            if body.get("password") != ADMIN_PASSWORD:
+                return self._send(401, {"ok": False})
+            items = load_manual()
+            for it in items:
+                if it.get("id") == body.get("id"):
+                    it["pinned"] = not it.get("pinned", False)
+                    break
+            save_manual(items)
+            return self._send(200, {"ok": True})
+        if u.path == "/api/ad/set":
+            if body.get("password") != ADMIN_PASSWORD:
+                return self._send(401, {"ok": False})
+            img = self._save_image(body.get("image_data") or "") or (body.get("image") or "").strip()
+            AD["image"] = img
+            AD["link"] = (body.get("link") or "").strip()
+            AD["active"] = bool(body.get("active"))
+            save_ad()
+            return self._send(200, {"ok": True})
         return self._send(404, {"error": "not found"})
 
 # ============================ START ============================
@@ -888,6 +977,7 @@ def main():
     load_geo()
     load_daily()
     load_contacts()
+    load_ad()
     print("\n  İdman24 başlayır...")
     if LIVE: print(f"  {len(LIVE)} xəbər keşdən dərhal yükləndi.")
     threading.Thread(target=refresher, daemon=True).start()
@@ -904,7 +994,9 @@ def main():
 # ============================ SƏHİFƏ (UI) ============================
 PAGE = r"""<!DOCTYPE html><html lang="az"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>İdman24 — Canlı İdman Xəbərləri</title>
+<link rel="manifest" href="/manifest.json"><meta name="theme-color" content="#0a0e17">
+<meta name="apple-mobile-web-app-capable" content="yes"><link rel="apple-touch-icon" href="/icon.svg">
+<title>İdman24 - Canlı İdman Xəbərləri</title>
 <style>
 :root{--bg:#0a0e17;--bg2:#0f1626;--card:#141d30;--card2:#1a2540;--line:#22304d;--txt:#eaf0fb;--muted:#8da2c5;--accent:#00e6a8;--accent2:#ff3d71;--gold:#ffc24b;--radius:16px}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -983,6 +1075,18 @@ main{max-width:1240px;margin:0 auto;padding:24px 20px 60px}
 .ctf{width:100%;background:#0d1525;border:1px solid var(--line);color:var(--txt);padding:12px 14px;border-radius:10px;font-size:14px;outline:none;font-family:inherit;margin-bottom:12px}
 .ctf:focus{border-color:var(--accent)}textarea.ctf{resize:vertical;min-height:120px}
 .ctbtn{background:var(--accent);color:#04231a;border:none;padding:13px 26px;border-radius:10px;font-weight:800;font-size:15px;cursor:pointer;margin-top:4px}
+.adbanner{display:block;position:relative;margin:0 0 22px;border-radius:14px;overflow:hidden;border:1px solid var(--line)}
+.adbanner img{width:100%;display:block;max-height:170px;object-fit:cover}
+.adtag{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.6);color:#fff;font-size:10px;padding:2px 8px;border-radius:6px}
+.trend{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-bottom:26px}
+.tcard{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;cursor:pointer;transition:.2s}
+.tcard:hover{border-color:var(--accent)}.tnum{font-size:22px;font-weight:800;color:var(--accent);min-width:24px}
+.tt{font-size:14px;font-weight:600;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.related{margin-top:24px;border-top:1px solid var(--line);padding-top:18px}.related h3{font-size:16px;margin-bottom:12px}
+.related .r{display:flex;gap:12px;padding:8px 0;cursor:pointer;border-bottom:1px solid var(--line)}
+.related .r:hover .rt{color:var(--accent)}
+.related .rimg{width:74px;height:54px;border-radius:8px;background-size:cover;background-position:center;background-color:#16223c;flex-shrink:0}
+.related .rt{font-size:13.5px;font-weight:600;line-height:1.35}
 .dash{position:fixed;inset:0;background:#0a0e17;z-index:150;display:none;grid-template-columns:228px 1fr}
 .dash.open{display:grid}
 .dashnav{background:#0f1626;border-right:1px solid var(--line);padding:18px 12px;overflow:auto}
@@ -1035,7 +1139,7 @@ footer{border-top:1px solid var(--line);text-align:center;padding:26px;color:var
 <div class="modal" id="adminModal" onclick="if(event.target===this)closeAdmin()"><div class="modal-box"><div id="adminInner"></div></div></div>
 <div class="dash" id="dash"><aside class="dashnav" id="dashNav"></aside><main class="dashmain" id="dashMain"></main></div>
 <script>
-let CURRENT="Hamısı",SEARCH="",ALL=[],CATS=["Hamısı"],UPDATED=null,PW="";
+let CURRENT="Hamısı",SEARCH="",ALL=[],CATS=["Hamısı"],UPDATED=null,PW="",AD_DATA=null;
 const esc=s=>(s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function fmtTime(iso){if(!iso)return"";const d=new Date(iso),diff=(Date.now()-d)/1000;if(isNaN(diff))return"";
  if(diff<60)return"indicə";if(diff<3600)return Math.floor(diff/60)+" dəq əvvəl";if(diff<86400)return Math.floor(diff/3600)+" saat əvvəl";
@@ -1043,6 +1147,7 @@ function fmtTime(iso){if(!iso)return"";const d=new Date(iso),diff=(Date.now()-d)
 async function load(){
   try{const d=await (await fetch("/api/news")).json();ALL=d.items||[];CATS=d.categories||CATS;UPDATED=d.updated;}
   catch(e){document.getElementById("status").textContent="Server ilə əlaqə yoxdur.";return;}
+  try{AD_DATA=await (await fetch("/api/ad")).json();}catch(e){AD_DATA=null;}
   document.getElementById("status").textContent=`${ALL.length} xəbər · yeniləndi ${fmtTime(UPDATED)}`;
   buildTabs();render();buildTicker();
 }
@@ -1067,13 +1172,23 @@ function render(){if(CURRENT==="Əlaqə"){document.getElementById("hero").innerH
         <div class="img" ${x.image?`style="background-image:url('${esc(x.image)}')"`:'style="background:linear-gradient(135deg,#16223c,#0f1830)"'}></div><div class="shade"></div>
         <div class="body">${badge(x)}<h3>${esc(x.title)}</h3><div class="src">${srcLine(x)}</div></div></div>`).join("")}</div></div>`;
     rest=items.slice(3);}else hero.innerHTML="";
-  const secTitle=CURRENT==="Hamısı"?"Son Xəbərlər":(CURRENT==="Arxiv"?"Arxiv — 1 aydan köhnə xəbərlər":CURRENT);
-  content.innerHTML=`<div class="section-h"><h2>${secTitle}</h2></div>
+  const secTitle=CURRENT==="Hamısı"?"Son Xəbərlər":CURRENT;
+  let prefix="";
+  if(CURRENT==="Hamısı"&&!SEARCH){
+    if(AD_DATA&&AD_DATA.active&&AD_DATA.image){prefix+=`<a class="adbanner" href="${esc(AD_DATA.link||'#')}" target="_blank" rel="noopener"><img src="${esc(AD_DATA.image)}" alt="reklam"><span class="adtag">Reklam</span></a>`;}
+    const trend=[...ALL].filter(x=>x.views>0).sort((a,b)=>b.views-a.views).slice(0,5);
+    if(trend.length>=3){prefix+=`<div class="section-h"><h2>🔥 Ən çox oxunan</h2></div><div class="trend">${trend.map((i,n)=>`<div class="tcard" onclick='openModal("${i.id}")'><span class="tnum">${n+1}</span><div><div class="tt">${esc(i.title)}</div><small style="color:var(--muted)">${esc(i.source)} · 👁 ${i.views}</small></div></div>`).join("")}</div>`;}
+  }
+  content.innerHTML=prefix+`<div class="section-h"><h2>${secTitle}</h2></div>
     <div class="grid">${rest.map(i=>`<div class="card" onclick='openModal("${i.id}")'>
       <div class="thumb ${i.image?'':'no-img'}" ${i.image?`style="background-image:url('${esc(i.image)}')"`:''}><span class="tag">${badge(i)}</span></div>
       <div class="c-body"><h3>${esc(i.title)}</h3>${i.summary?`<p>${esc(i.summary)}</p>`:""}
-        <div class="foot"><span style="color:var(--accent)">${esc(i.source)}</span><span>${fmtTime(i.date)}</span></div></div></div>`).join("")}</div>`;}
+        <div class="foot"><span style="color:var(--accent)">${esc(i.source)}</span><span>${i.views?`👁 ${i.views} · `:""}${fmtTime(i.date)}</span></div></div></div>`).join("")}</div>`;}
 function find(id){return ALL.find(i=>i.id===id);}
+function relatedHtml(a){const rel=ALL.filter(x=>x.category===a.category&&x.id!==a.id).slice(0,4);
+  if(!rel.length)return"";
+  return `<div class="related"><h3>Oxşar xəbərlər</h3>${rel.map(r=>`<div class="r" onclick='openModal("${r.id}")'>
+    <div class="rimg" ${r.image?`style="background-image:url('${esc(r.image)}')"`:''}></div><div class="rt">${esc(r.title)}</div></div>`).join("")}</div>`;}
 let CUR=null,EDIT_ID=null;
 function renderModal(a,loading){const text=a.body||a.summary||"";
   document.getElementById("modalBox").innerHTML=`<span class="modal-close" onclick="closeModal()">×</span>
@@ -1086,6 +1201,7 @@ function renderModal(a,loading){const text=a.body||a.summary||"";
           <button class="sharebtn" onclick="shareArticle()">↗ Paylaş</button>
           <button class="sharebtn" id="trBtn" onclick="translateArticle()">🌐 Tərcümə</button>
         </div>
+        ${relatedHtml(a)}
         <div class="comments"><h3>Şərhlər</h3>
           <div id="cmList"><p class="cmEmpty">Yüklənir...</p></div>
           <div class="cmForm">
@@ -1240,7 +1356,7 @@ async function dashOpen(){document.getElementById("adminModal").classList.remove
 function dashClose(){document.getElementById("dash").classList.remove("open");}
 async function dashLoad(){try{DASH=await (await fetch("/api/dashboard",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:PW})})).json();}catch(e){DASH={ok:false};}}
 function dashNav(s){DSEC=s;dashRender();}
-function dashRender(){const nav=[["overview","📊 İcmal"],["articles","📰 Xəbərlərim"],["stats","📈 Statistika"],["comments","💬 Şərhlər"],["contacts","📩 Mesajlar"],["sources","🌐 Mənbələr"]];
+function dashRender(){const nav=[["overview","📊 İcmal"],["articles","📰 Xəbərlərim"],["stats","📈 Statistika"],["comments","💬 Şərhlər"],["contacts","📩 Mesajlar"],["ad","📢 Reklam"],["sources","🌐 Mənbələr"]];
   document.getElementById("dashNav").innerHTML=`<div class="dlogo"><span>İdman</span>24 · Admin</div>`+
     nav.map(n=>`<button class="${DSEC===n[0]?'on':''}" onclick="dashNav('${n[0]}')">${n[1]}</button>`).join("")+
     `<button onclick="dashClose()" style="margin-top:18px;color:var(--accent2)">← Sayta qayıt</button>`+
@@ -1251,8 +1367,26 @@ function dashRender(){const nav=[["overview","📊 İcmal"],["articles","📰 X�
   else if(DSEC==="stats")m.innerHTML=dashStats();
   else if(DSEC==="comments")m.innerHTML=dashComments();
   else if(DSEC==="contacts")m.innerHTML=dashContacts();
+  else if(DSEC==="ad")m.innerHTML=dashAd();
   else if(DSEC==="sources")m.innerHTML=dashSources();
   m.scrollTop=0;}
+function dashAd(){const a=AD_DATA||{};
+  return `<h2>Reklam</h2><div class="sub">Saytın əsas səhifəsində göstəriləcək banner</div>
+   <div class="panel" style="max-width:620px">
+     <div id="adMsg" style="display:none;margin-bottom:10px;padding:10px 14px;border-radius:8px"></div>
+     ${a.image?`<img src="${esc(a.image)}" style="max-width:100%;border-radius:10px;margin-bottom:12px">`:''}
+     <label>Banner şəkli (yüklə)</label><input class="f" id="adImg" type="file" accept="image/*">
+     <label>...və ya şəkil linki (URL)</label><input class="f" id="adUrl" placeholder="https://...jpg" value="${a.image&&String(a.image).startsWith('http')?esc(a.image):''}">
+     <label>Keçid linki (reklam haraya aparsın)</label><input class="f" id="adLink" placeholder="https://..." value="${esc(a.link||'')}">
+     <label style="display:flex;align-items:center;gap:8px;margin-top:14px;color:var(--txt)"><input type="checkbox" id="adActive" ${a.active?'checked':''} style="width:auto"> Reklamı göstər (aktiv)</label>
+     <button class="btn" onclick="saveAd()">Yadda saxla</button></div>`;}
+function adMsg(t,ok){const m=document.getElementById("adMsg");if(!m)return;m.style.display="block";m.textContent=t;m.style.background=ok?"rgba(0,230,168,.15)":"rgba(255,61,113,.15)";m.style.color=ok?"var(--accent)":"var(--accent2)";setTimeout(()=>{m.style.display="none";},4000);}
+async function saveAd(){const fileEl=document.getElementById("adImg");let image_data="";
+  if(fileEl.files&&fileEl.files[0]){if(fileEl.files[0].size>5*1024*1024){adMsg("Şəkil 5MB-dan kiçik olmalıdır",false);return;}
+    image_data=await new Promise(r=>{const fr=new FileReader();fr.onload=()=>r(fr.result);fr.readAsDataURL(fileEl.files[0]);});}
+  const payload={password:PW,image_data,image:document.getElementById("adUrl").value.trim(),link:document.getElementById("adLink").value.trim(),active:document.getElementById("adActive").checked};
+  const r=await (await fetch("/api/ad/set",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})).json();
+  if(r.ok){adMsg("✓ Yadda saxlanıldı",true);try{AD_DATA=await (await fetch("/api/ad")).json();}catch(e){}dashRender();}else adMsg("Xəta baş verdi",false);}
 function kpi(k,v,c){return `<div class="kpi"><div class="k">${k}</div><div class="v" style="color:${c||'var(--txt)'}">${v||0}</div></div>`;}
 function dashOverview(){const d=DASH||{},t=d.totals||{};
   const daily=d.daily||[],max=Math.max(1,...daily.map(x=>x.count));
@@ -1330,15 +1464,18 @@ async function saveArticle(){const t=document.getElementById("aTitle").value.tri
 function renderMyList(){const mine=ALL.filter(i=>i.manual);
   document.getElementById("myList").innerHTML=mine.length?mine.map(i=>`<div class="li"><div><b>${esc(i.title)}</b><br>
     <small style="color:var(--muted)">${esc(i.category)} · ${fmtTime(i.date)}</small></div>
-    <div style="display:flex;gap:8px">
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button onclick="pinArticle('${i.id}')" style="background:var(--card);border:1px solid ${i.pinned?'var(--gold)':'var(--line)'};color:${i.pinned?'var(--gold)':'var(--muted)'};padding:7px 12px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px">📌 ${i.pinned?'Sabitlənib':'Sabitlə'}</button>
       <button onclick="editArticle('${i.id}')" style="background:var(--card);border:1px solid var(--line);color:var(--txt);padding:7px 12px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px">Düzəliş</button>
       <button class="del" onclick="delArticle('${i.id}')">Sil</button></div></div>`).join(""):`<p style="color:var(--muted);font-size:13px;margin-top:8px">Hələ xəbər yoxdur.</p>`;}
+async function pinArticle(id){await fetch("/api/article/pin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:PW,id})});await load();renderMyList();}
 async function delArticle(id){if(!confirm("Silinsin?"))return;
   await fetch("/api/article/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:PW,id})});await load();renderMyList();}
 function selectCat(c){CURRENT=c;SEARCH="";document.getElementById("q").value="";window.scrollTo({top:0,behavior:"smooth"});buildTabs();render();buildTicker();}
 let st;function onSearch(){SEARCH=document.getElementById("q").value;clearTimeout(st);st=setTimeout(()=>{render();buildTicker();},250);}
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){closeModal();closeAdmin();}});
 restoreAdminSession();load().then(openFromHash);window.addEventListener("hashchange",openFromHash);setInterval(load,60000);
+if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}
 </script></body></html>"""
 
 
