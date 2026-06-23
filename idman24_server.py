@@ -808,7 +808,7 @@ main{max-width:1240px;margin:0 auto;padding:24px 20px 60px}
 .cmForm input,.cmForm textarea{background:#0d1525;border:1px solid var(--line);color:var(--txt);padding:11px 13px;border-radius:9px;font-size:14px;outline:none;font-family:inherit}
 .cmForm input:focus,.cmForm textarea:focus{border-color:var(--accent)}.cmForm textarea{resize:vertical;min-height:70px}
 .cmForm button{align-self:flex-start;background:var(--accent);color:#04231a;border:none;padding:10px 20px;border-radius:9px;font-weight:700;font-size:14px;cursor:pointer}
-.iz-toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);background:#141d30;border:1px solid var(--accent);color:var(--accent);padding:11px 20px;border-radius:10px;font-size:14px;z-index:200}
+.iz-toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);background:#141d30;border:1px solid var(--accent);color:var(--accent);padding:11px 20px;border-radius:10px;font-size:14px;z-index:200;max-width:88%;word-break:break-all;text-align:center}
 .contactWrap{max-width:560px}
 .ctf{width:100%;background:#0d1525;border:1px solid var(--line);color:var(--txt);padding:12px 14px;border-radius:10px;font-size:14px;outline:none;font-family:inherit;margin-bottom:12px}
 .ctf:focus{border-color:var(--accent)}textarea.ctf{resize:vertical;min-height:120px}
@@ -909,10 +909,12 @@ async function openModal(id){const a=find(id);if(!a)return;CUR=a;trackArticle(a,
 function closeModal(){document.getElementById("modal").classList.remove("open");}
 function izToast(m){const t=document.createElement("div");t.className="iz-toast";t.textContent=m;document.body.appendChild(t);setTimeout(()=>t.remove(),2200);}
 function trackArticle(a,type){if(!a)return;try{fetch("/api/track",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:a.id,type,title:a.title})});}catch(e){}}
-function shareArticle(){const a=CUR;if(!a)return;trackArticle(a,"share");const url=a.link||location.href;const title=a.title||"İdman24";
+function articleLink(a){return location.origin+location.pathname+"#a="+encodeURIComponent(a.id);}
+function shareArticle(){const a=CUR;if(!a)return;trackArticle(a,"share");const url=articleLink(a);const title=a.title||"İdman24";
   if(navigator.share){navigator.share({title,url}).catch(()=>{});}
-  else if(navigator.clipboard){navigator.clipboard.writeText(url).then(()=>izToast("Link kopyalandı ✓")).catch(()=>izToast(url));}
+  else if(navigator.clipboard){navigator.clipboard.writeText(url).then(()=>izToast("Keçid kopyalandı: "+url)).catch(()=>izToast(url));}
   else izToast(url);}
+function openFromHash(){const m=(location.hash||"").match(/[#&]a=([^&]+)/);if(m){const id=decodeURIComponent(m[1]);if(find(id))openModal(id);}}
 async function loadComments(id){const box=document.getElementById("cmList");if(!box)return;
   try{const d=await (await fetch("/api/comments?id="+encodeURIComponent(id))).json();const list=d.comments||[];
     box.innerHTML=list.length?list.map(c=>`<div class="cm"><div class="cmhead"><b>${esc(c.name)}</b><small>${fmtTime(c.date)}</small></div><p>${esc(c.text)}</p></div>`).join("")
@@ -1046,7 +1048,7 @@ async function delArticle(id){if(!confirm("Silinsin?"))return;
 function selectCat(c){CURRENT=c;SEARCH="";document.getElementById("q").value="";window.scrollTo({top:0,behavior:"smooth"});buildTabs();render();buildTicker();}
 let st;function onSearch(){SEARCH=document.getElementById("q").value;clearTimeout(st);st=setTimeout(()=>{render();buildTicker();},250);}
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){closeModal();closeAdmin();}});
-load();setInterval(load,60000);
+load().then(openFromHash);window.addEventListener("hashchange",openFromHash);setInterval(load,60000);
 </script></body></html>"""
 
 
