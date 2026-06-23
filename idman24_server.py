@@ -469,6 +469,14 @@ def ijf_get(params, ttl):
     _ijf_cache[key] = (now, data)
     return data
 
+def _ijf_age(c):
+    s = ((c.get("competition_code") or "") + " " + (c.get("name") or "")).lower()
+    if "cadet" in s or "_cad" in s or "u18" in s:
+        return "cadets"
+    if "junior" in s or "_jun" in s or "u21" in s or "u23" in s:
+        return "juniors"
+    return "seniors"
+
 def judo_competitions():
     data = ijf_get({"action": "competition.get_list"}, 6 * 3600)
     if not isinstance(data, list):
@@ -481,10 +489,12 @@ def judo_competitions():
             y = int(c.get("comp_year") or 0)
         except Exception:
             y = 0
-        if y < cy - 1:
+        if y < cy - 2:                      # son 3 il (bitmiş yarışlar da daxil)
             continue
         df = (c.get("date_from") or "").replace("\\/", "/")
         dt = (c.get("date_to") or "").replace("\\/", "/")
+        if df and df > today:               # gələcək yarışlar təqvimdə göstərilir, burada yox
+            continue
         out.append({"id": c.get("id_competition"),
                     "name": c.get("name") or c.get("competition_code") or "Yarış",
                     "city": c.get("city") or "", "country": c.get("country") or "",
@@ -492,8 +502,28 @@ def judo_competitions():
                     "live": bool(df and dt and df <= today <= dt),
                     "has_results": str(c.get("has_results")) in ("1", "true", "True")})
     out.sort(key=lambda x: x["date_from"], reverse=True)
-    out.sort(key=lambda x: not x["live"])
+    out.sort(key=lambda x: not x["has_results"])   # nəticəsi olanlar əvvəldə (default dolu görünsün)
     return out[:60]
+
+def judo_calendar(age):
+    data = ijf_get({"action": "competition.get_list"}, 6 * 3600)
+    if not isinstance(data, list):
+        return []
+    today = datetime.now().strftime("%Y/%m/%d")
+    out = []
+    for c in data:
+        df = (c.get("date_from") or "").replace("\\/", "/")
+        if not df or df < today:            # yalnız gələcək yarışlar
+            continue
+        a = _ijf_age(c)
+        if age and age != "all" and a != age:
+            continue
+        out.append({"name": c.get("name") or c.get("competition_code") or "Yarış",
+                    "city": c.get("city") or "", "country": c.get("country") or "",
+                    "date_from": df, "date_to": (c.get("date_to") or "").replace("\\/", "/"),
+                    "age": a})
+    out.sort(key=lambda x: x["date_from"])
+    return out[:40]
 
 def judo_categories(cid):
     data = ijf_get({"action": "competition.categories_full", "id_competition": cid}, 24 * 3600)
@@ -518,12 +548,13 @@ def judo_contests(cid, wid):
         winner = "w" if (win and win == idw) else ("b" if (win and win == idb) else "")
         def sc(p):
             return "%s-%s" % (c.get("ippon_" + p) or 0, c.get("waza_" + p) or 0)
+        # Qalibi bəlli olan görüş bitmiş sayılır (köhnə yarışlarda yanlış "canlı" işığı olmasın)
+        finished = str(c.get("is_finished")) in ("1", "true", "True") or bool(winner)
         out.append({"white": c.get("person_white") or "", "cw": c.get("country_white") or "",
                     "blue": c.get("person_blue") or "", "cb": c.get("country_blue") or "",
                     "sw": sc("w"), "sb": sc("b"),
                     "shidow": c.get("penalty_w") or 0, "shidob": c.get("penalty_b") or 0,
-                    "winner": winner,
-                    "finished": str(c.get("is_finished")) in ("1", "true", "True"),
+                    "winner": winner, "finished": finished,
                     "gs": str(c.get("gs")) in ("1", "true", "True"),
                     "round": c.get("round_name") or "",
                     "fid": c.get("id_fight") or "0"})
@@ -900,6 +931,9 @@ class H(BaseHTTPRequestHandler):
             qs = parse_qs(u.query)
             cid = qs.get("comp", [""])[0]; wid = qs.get("weight", [""])[0]
             return self._send(200, {"items": judo_contests(cid, wid) if (cid and wid) else []})
+        if u.path == "/api/judo/calendar":
+            age = parse_qs(u.query).get("age", ["all"])[0]
+            return self._send(200, {"items": judo_calendar(age)})
         if u.path == "/rss.xml":
             return self._send(200, rss_xml(), "application/rss+xml; charset=utf-8")
         if u.path == "/sitemap.xml":
@@ -1313,14 +1347,31 @@ main{max-width:1240px;margin:0 auto;padding:24px 20px 60px}
 .favchip{background:var(--card);border:1px solid var(--line);padding:9px 14px;border-radius:30px;cursor:pointer;font-size:14px;display:inline-flex;align-items:center;gap:6px}
 .judosel{display:flex;gap:10px;flex-wrap:wrap}
 .judosel select{background:var(--card);border:1px solid var(--line);color:var(--txt);padding:10px 12px;border-radius:10px;font-size:14px;max-width:100%}
-.jrow{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:11px 14px;margin-bottom:10px}
-.jmeta{display:flex;gap:12px;font-size:11px;color:var(--muted);margin-bottom:7px;text-transform:uppercase;letter-spacing:.05em}
-.jlive{color:var(--accent2);font-weight:700}
+.jrow{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:11px 14px 12px;margin-bottom:10px;position:relative}
+.jlivebox{border-color:rgba(255,61,113,.45);box-shadow:0 0 0 1px rgba(255,61,113,.15)}
+.jmeta{display:flex;gap:12px;align-items:center;font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em}
+.jlive{color:#04231a;background:var(--accent2);font-weight:800;padding:2px 8px;border-radius:20px;animation:jblink 1.4s infinite}
+@keyframes jblink{50%{opacity:.55}}
 .js{display:flex;justify-content:space-between;align-items:center;padding:5px 0}
-.jn{font-size:14.5px}.jn small{color:var(--muted);font-size:12px}
+.jn{font-size:14.5px;display:flex;align-items:center;gap:8px}.jn small{color:var(--muted);font-size:11px;font-weight:600;background:#0d1525;padding:1px 6px;border-radius:5px}
+.gi{width:9px;height:9px;border-radius:50%;flex:0 0 auto;display:inline-block}
+.gi.w{background:#e9eef7;box-shadow:0 0 0 1px var(--line)}.gi.b{background:#3b82f6}
+.jvs{text-align:center;font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.1em;margin:1px 0}
 .jsc{font-weight:700;font-variant-numeric:tabular-nums;color:var(--muted)}
+.shi{font-style:normal;background:#caa400;color:#1a1500;border-radius:4px;padding:0 5px;font-size:11px;margin-left:4px}
 .jwin .jn{color:var(--accent);font-weight:700}.jwin .jsc{color:var(--accent)}
 .jwin .jn:after{content:" ✓";color:var(--accent)}
+.caldate small{display:block;font-size:9px;color:var(--muted);font-weight:600}
+.judopanel{background:linear-gradient(160deg,#101a30,#0c1424);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:14px;padding:18px;margin-bottom:22px}
+.jph{display:flex;align-items:baseline;gap:10px;margin-bottom:6px}.jph h2{margin:0;font-size:18px}
+.jphs{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.agefilter{display:flex;flex-wrap:wrap;gap:8px}
+.agebtn{background:#0d1525;border:1px solid var(--line);color:var(--muted);padding:7px 14px;border-radius:30px;cursor:pointer;font-size:13px}
+.agebtn.on{background:var(--accent);color:#04231a;border-color:var(--accent);font-weight:700}
+.calrow{display:flex;gap:14px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.calrow:last-child{border-bottom:none}
+.caldate{min-width:52px;text-align:center;background:#0d1525;border:1px solid var(--line);border-radius:9px;padding:6px 4px;font-weight:700;font-size:13px;color:var(--accent);font-variant-numeric:tabular-nums}
+.calname{font-size:14.5px;font-weight:600}.calmeta{font-size:12.5px;color:var(--muted);margin-top:2px}
 .dash{position:fixed;inset:0;background:#0a0e17;z-index:150;display:none;grid-template-columns:228px 1fr}
 .dash.open{display:grid}
 .dashnav{background:#0f1626;border-right:1px solid var(--line);padding:18px 12px;overflow:auto}
@@ -1389,7 +1440,7 @@ async function load(){
   buildTabs();render();buildTicker();
 }
 async function hardRefresh(){document.getElementById("status").textContent="Yenilənir...";await fetch("/api/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});load();}
-function buildTabs(){const list=[CATS[0],"⭐ Mənim","🥋 Cüdo",...CATS.slice(1),"Əlaqə"];document.getElementById("tabs").innerHTML=list.map(c=>`<button class="tab ${c===CURRENT?'active':''}" onclick="selectCat('${c}')">${c}</button>`).join("");}
+function buildTabs(){const list=[CATS[0],"⭐ Mənim",...CATS.slice(1),"Əlaqə"];document.getElementById("tabs").innerHTML=list.map(c=>`<button class="tab ${c===CURRENT?'active':''}" onclick="selectCat('${c}')">${c}</button>`).join("");}
 function current(){let i=[...ALL];
   if(CURRENT!=="Hamısı")i=i.filter(x=>x.category===CURRENT);
   if(SEARCH){const q=SEARCH.toLowerCase();i=i.filter(x=>(x.title+" "+x.summary).toLowerCase().includes(q));}return i;}
@@ -1399,8 +1450,8 @@ function buildTicker(){const tk=document.querySelector('.ticker');if(SEARCH||CUR
   tk.style.display='block';const t=ALL.slice(0,10).map(i=>`<span>${esc(i.title)}</span>`).join("");document.getElementById("ticker").innerHTML="<b>SON DƏQİQƏ</b>"+t+t;}
 function render(){if(CURRENT==="Əlaqə"){document.getElementById("hero").innerHTML="";renderContact();return;}
   if(CURRENT==="⭐ Mənim"){document.getElementById("hero").innerHTML="";renderPersonal();return;}
-  if(CURRENT==="🥋 Cüdo"){document.getElementById("hero").innerHTML="";renderJudo();return;}
   const items=current(),hero=document.getElementById("hero"),content=document.getElementById("content");
+  if(CURRENT==="Cüdo"){renderCudo(items);return;}
   if(!items.length){hero.innerHTML="";content.innerHTML=`<div class="empty">Bu kateqoriyada xəbər tapılmadı.</div>`;return;}
   let rest=items;
   if(CURRENT==="Hamısı"&&!SEARCH&&items.length>=4){const[a,b,c]=items;
@@ -1455,15 +1506,41 @@ function favPicker(){const cats=CATS.filter(c=>c!=="Hamısı");
 function saveFavsFromPicker(){FAVS=[...document.querySelectorAll('#content input[type=checkbox]:checked')].map(c=>c.value);FAV_EDIT=false;saveFavs();render();}
 function editFavs(){FAV_EDIT=true;render();}
 let JUDO={comps:null,cats:[],cid:"",wid:"",t:null};
-function renderJudo(){const content=document.getElementById("content");
-  content.innerHTML=`<div class="section-h"><h2>🥋 Cüdo — Canlı nəticələr</h2></div>
-   <p style="color:var(--muted);margin-bottom:14px;max-width:640px">Beynəlxalq Cüdo Federasiyasının (IJF) rəsmi məlumatları. Yarışı və çəki dərəcəsini seçin — canlı görüşlər yuxarıda göstərilir.</p>
+let JCAL={age:"all"};
+function judoPanelHtml(){return `<div class="judopanel">
+   <div class="jph"><h2>🥋 Canlı nəticələr</h2><span class="jphs">IJF JudoBase</span></div>
+   <p style="color:var(--muted);margin:0 0 12px;font-size:13.5px">Yarışı və çəki dərəcəsini seçin — canlı görüşlər yuxarıda, hər 30 saniyədə yenilənir.</p>
    <div class="judosel">
      <select id="judoComp" onchange="judoPickComp()"><option>Yüklənir...</option></select>
      <select id="judoWeight" onchange="judoPickWeight()"><option>—</option></select>
    </div>
-   <div id="judoResults" style="margin-top:18px"><div class="loader" style="padding:30px"><div class="spin"></div></div></div>`;
-  judoInit();}
+   <div id="judoResults" style="margin-top:16px"><div class="loader" style="padding:24px"><div class="spin"></div></div></div></div>`;}
+function judoCalHtml(){return `<div class="judopanel calpanel">
+   <div class="jph"><h2>📅 Gələcək yarışlar</h2><span class="jphs">Təqvim</span></div>
+   <div class="agefilter">
+     <button class="agebtn on" data-age="all" onclick="judoCalPick('all')">Hamısı</button>
+     <button class="agebtn" data-age="cadets" onclick="judoCalPick('cadets')">Kadetlər</button>
+     <button class="agebtn" data-age="juniors" onclick="judoCalPick('juniors')">Gənclər</button>
+     <button class="agebtn" data-age="seniors" onclick="judoCalPick('seniors')">Böyüklər</button>
+   </div>
+   <div id="judoCal" style="margin-top:14px"><div class="loader" style="padding:20px"><div class="spin"></div></div></div></div>`;}
+function ageLabel(a){return a==="cadets"?"Kadetlər":a==="juniors"?"Gənclər":"Böyüklər";}
+function calRow(c){const d=(c.date_from||"").split("/");const dd=d.length===3?`${d[2]}.${d[1]}`:(c.date_from||"");
+  const yr=d.length===3?d[0]:"";const loc=[c.city,c.country].filter(Boolean).map(esc).join(", ");
+  return `<div class="calrow"><div class="caldate">${dd}<small>${yr}</small></div>
+    <div class="calbody"><div class="calname">${esc(c.name)}</div><div class="calmeta">${loc}${loc?' · ':''}${ageLabel(c.age)}</div></div></div>`;}
+async function judoCalLoad(){const box=document.getElementById("judoCal");if(!box)return;
+  box.innerHTML='<div class="loader" style="padding:18px"><div class="spin"></div></div>';
+  let items=[];try{items=((await (await fetch("/api/judo/calendar?age="+encodeURIComponent(JCAL.age))).json()).items)||[];}catch(e){}
+  if(CURRENT!=="Cüdo")return;
+  box.innerHTML=items.length?items.map(calRow).join(""):'<p style="color:var(--muted)">Bu kateqoriyada planlaşdırılmış yarış tapılmadı.</p>';}
+function judoCalPick(a){JCAL.age=a;document.querySelectorAll('.agebtn').forEach(b=>b.classList.toggle('on',b.dataset.age===a));judoCalLoad();}
+function renderCudo(items){document.getElementById("hero").innerHTML="";
+  const news=items.length
+    ?`<div class="section-h"><h2>Cüdo xəbərləri</h2></div><div class="grid">${items.map(cardHtml).join("")}</div>`
+    :`<div class="empty" style="margin-top:18px">Hələ cüdo xəbəri yoxdur.</div>`;
+  document.getElementById("content").innerHTML=judoPanelHtml()+judoCalHtml()+news;
+  judoInit();judoCalLoad();}
 async function judoInit(){
   if(!JUDO.comps){try{JUDO.comps=((await (await fetch("/api/judo/competitions")).json()).items)||[];}catch(e){JUDO.comps=[];}}
   const sel=document.getElementById("judoComp");if(!sel)return;
@@ -1481,15 +1558,16 @@ async function judoLoadContests(){const box=document.getElementById("judoResults
   if(JUDO.t){clearTimeout(JUDO.t);JUDO.t=null;}
   box.innerHTML='<div class="loader" style="padding:24px"><div class="spin"></div></div>';
   let items=[];try{items=((await (await fetch(`/api/judo/contests?comp=${encodeURIComponent(JUDO.cid)}&weight=${encodeURIComponent(JUDO.wid)}`)).json()).items)||[];}catch(e){}
-  if(CURRENT!=="🥋 Cüdo")return;
+  if(CURRENT!=="Cüdo")return;
   if(!items.length){box.innerHTML='<p style="color:var(--muted)">Bu çəkidə hələ görüş yoxdur.</p>';return;}
   box.innerHTML=items.map(judoRow).join("");
-  if(items.some(x=>!x.finished)){JUDO.t=setTimeout(()=>{if(CURRENT==="🥋 Cüdo")judoLoadContests();},30000);}}
-function judoSide(name,country,score,win,shido){return `<div class="js ${win?'jwin':''}"><span class="jn">${esc(name||'—')}${country?` <small>${esc(country)}</small>`:''}</span><span class="jsc">${esc(score)}${shido?` · ${shido}🟨`:''}</span></div>`;}
+  if(items.some(x=>!x.finished)){JUDO.t=setTimeout(()=>{if(CURRENT==="Cüdo")judoLoadContests();},30000);}}
+function judoSide(name,country,score,win,shido,color){return `<div class="js ${win?'jwin':''}"><span class="jn"><i class="gi ${color}"></i>${esc(name||'—')}${country?` <small>${esc(country)}</small>`:''}</span><span class="jsc">${esc(score)}${shido?` <i class="shi">${shido}</i>`:''}</span></div>`;}
 function judoRow(c){const live=!c.finished;
-  return `<div class="jrow"><div class="jmeta">${live?'<span class="jlive">🔴 CANLI</span>':''}${c.round?`<span>${esc(c.round)}</span>`:''}${c.gs?'<span>Golden Score</span>':''}</div>
-    ${judoSide(c.white,c.cw,c.sw,c.winner==='w',c.shidow)}
-    ${judoSide(c.blue,c.cb,c.sb,c.winner==='b',c.shidob)}</div>`;}
+  return `<div class="jrow ${live?'jlivebox':''}"><div class="jmeta">${live?'<span class="jlive">CANLI</span>':''}${c.round?`<span>${esc(c.round)}</span>`:''}${c.gs?'<span>Qızıl Hesab</span>':''}</div>
+    ${judoSide(c.white,c.cw,c.sw,c.winner==='w',c.shidow,'w')}
+    <div class="jvs">VS</div>
+    ${judoSide(c.blue,c.cb,c.sb,c.winner==='b',c.shidob,'b')}</div>`;}
 function find(id){return ALL.find(i=>i.id===id);}
 function relatedHtml(a){const rel=ALL.filter(x=>x.category===a.category&&x.id!==a.id).slice(0,4);
   if(!rel.length)return"";
@@ -1796,7 +1874,7 @@ function renderMyList(){const mine=ALL.filter(i=>i.manual);
 async function pinArticle(id){await fetch("/api/article/pin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:PW,id})});await load();renderMyList();}
 async function delArticle(id){if(!confirm("Silinsin?"))return;
   await fetch("/api/article/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:PW,id})});await load();renderMyList();}
-function selectCat(c){CURRENT=c;SEARCH="";if(c!=="⭐ Mənim")FAV_EDIT=false;if(c!=="🥋 Cüdo"&&JUDO.t){clearTimeout(JUDO.t);JUDO.t=null;}document.getElementById("q").value="";window.scrollTo({top:0,behavior:"smooth"});buildTabs();render();buildTicker();}
+function selectCat(c){CURRENT=c;SEARCH="";if(c!=="⭐ Mənim")FAV_EDIT=false;if(c!=="Cüdo"&&JUDO.t){clearTimeout(JUDO.t);JUDO.t=null;}document.getElementById("q").value="";window.scrollTo({top:0,behavior:"smooth"});buildTabs();render();buildTicker();}
 let st;function onSearch(){SEARCH=document.getElementById("q").value;clearTimeout(st);st=setTimeout(()=>{render();buildTicker();},250);}
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){closeModal();closeAdmin();}});
 restoreAdminSession();load().then(openFromHash);window.addEventListener("hashchange",openFromHash);setInterval(load,60000);
