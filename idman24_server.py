@@ -522,8 +522,11 @@ def judo_competitions():
         dt = (c.get("date_to") or "").replace("\\/", "/")
         if df and df > today:               # gələcək yarışlar təqvimdə göstərilir, burada yox
             continue
+        nm = (c.get("name") or "")
+        if "camp" in nm.lower() or "training" in nm.lower():   # təlim düşərgələri turnir deyil
+            continue
         out.append({"id": c.get("id_competition"),
-                    "name": c.get("name") or c.get("competition_code") or "Yarış",
+                    "name": nm or c.get("competition_code") or "Yarış",
                     "city": c.get("city") or "", "country": c.get("country") or "",
                     "date_from": df, "date_to": dt,
                     "live": bool(df and dt and df <= today <= dt),
@@ -542,6 +545,8 @@ def judo_calendar(age):
     for c in data:
         df = (c.get("date_from") or "").replace("\\/", "/")
         if not df or df < today:            # yalnız gələcək yarışlar
+            continue
+        if "camp" in (c.get("name") or "").lower() or "training" in (c.get("name") or "").lower():
             continue
         a = _ijf_age(c)
         if age and age != "all" and a != age:
@@ -591,6 +596,44 @@ def judo_contests(cid, wid):
     out.sort(key=lambda x: int(x["fid"]) if str(x["fid"]).isdigit() else 0, reverse=True)
     out.sort(key=lambda x: x["finished"])   # bitməmiş (canlı) görüşlər yuxarıda
     return out
+
+# ---- Cüdo Dünya Reytinqi (World Ranking List) ----
+_WCATS = [(1,"-60","m"),(2,"-66","m"),(3,"-73","m"),(4,"-81","m"),(5,"-90","m"),(6,"-100","m"),(7,"+100","m"),
+          (8,"-48","f"),(9,"-52","f"),(10,"-57","f"),(11,"-63","f"),(12,"-70","f"),(13,"-78","f"),(14,"+78","f")]
+_rank_cache = {"ts": 0, "data": None}
+
+def _rank_leader(w):
+    d = ijf_get({"action": "ranking.get_list", "id_weight": w}, 12 * 3600)
+    feed = d.get("feed") if isinstance(d, dict) else None
+    if not feed:
+        return None
+    top = min(feed, key=lambda x: int(x.get("place") or 999))
+    pid = top.get("id_person")
+    info = ijf_get({"action": "competitor.info", "id_person": pid}, 12 * 3600) or {}
+    cc = info.get("country_short") or ""
+    return {"name": info.get("family_name") or "", "giv": info.get("given_name") or "",
+            "cc": cc, "iso": _iso2(cc), "country": info.get("country") or "",
+            "pts": top.get("sum_points") or ""}
+
+def judo_ranking():
+    now = time.time()
+    if _rank_cache["data"] and now - _rank_cache["ts"] < 12 * 3600:
+        return _rank_cache["data"]
+    try:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            res = list(pool.map(lambda wc: (wc, _rank_leader(wc[0])), _WCATS))
+    except Exception as e:
+        print("[ranking]", e)
+        return _rank_cache["data"] or {"men": [], "women": []}
+    men, women = [], []
+    for (w, label, g), r in res:
+        row = {"weight": label, "name": (r or {}).get("name", ""), "giv": (r or {}).get("giv", ""),
+               "cc": (r or {}).get("cc", ""), "iso": (r or {}).get("iso", ""), "pts": (r or {}).get("pts", "")}
+        (men if g == "m" else women).append(row)
+    data = {"men": men, "women": women}
+    if men or women:
+        _rank_cache["ts"] = now; _rank_cache["data"] = data
+    return data
 
 def public_live():
     # Saytda göstərmək üçün: yalnız şəkilli xəbərlər + eyni şəkli işlədən
@@ -964,6 +1007,8 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/api/judo/calendar":
             age = parse_qs(u.query).get("age", ["all"])[0]
             return self._send(200, {"items": judo_calendar(age)})
+        if u.path == "/api/judo/ranking":
+            return self._send(200, judo_ranking())
         if u.path == "/rss.xml":
             return self._send(200, rss_xml(), "application/rss+xml; charset=utf-8")
         if u.path == "/sitemap.xml":
@@ -1411,6 +1456,16 @@ main{max-width:1240px;margin:0 auto;padding:24px 20px 60px}
 .wn{min-width:20px;height:20px;display:flex;align-items:center;justify-content:center;background:var(--accent);color:#04231a;border-radius:6px;font-size:12px;font-weight:800;flex:0 0 auto}
 .wdate{min-width:42px;text-align:center;background:#0d1525;border:1px solid var(--line);border-radius:7px;padding:4px 2px;font-size:12px;font-weight:700;color:var(--accent);flex:0 0 auto}
 .wt{font-size:13px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.wrlgrid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media(max-width:760px){.wrlgrid{grid-template-columns:1fr}}
+.wrlcol h4{margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent)}
+.wrlrow{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13.5px}
+.wrlrow:last-child{border-bottom:none}
+.wrlw{min-width:54px;color:var(--muted);font-weight:700;font-variant-numeric:tabular-nums}
+.wrlnm{flex:1;min-width:0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wrlc{display:flex;align-items:center;gap:5px;flex:0 0 auto}
+.wrlcc{color:var(--muted);font-size:11px}
+.wrlpts{min-width:74px;text-align:right;color:var(--accent);font-weight:700;font-variant-numeric:tabular-nums;flex:0 0 auto}
 .cudolow{display:grid;grid-template-columns:1fr 300px;gap:18px;align-items:start;margin-top:4px}
 .cudonews{min-width:0}
 #judoResults{max-height:430px;overflow:auto;padding-right:4px}
@@ -1428,25 +1483,26 @@ main{max-width:1240px;margin:0 auto;padding:24px 20px 60px}
 /* IJF üslublu şəbəkə (draw) */
 .ijfbr{display:flex;align-items:stretch;overflow-x:auto;padding:4px 0 12px}
 .imsub{font-weight:700;color:var(--muted);text-transform:uppercase;font-size:11px;letter-spacing:.05em;margin:16px 0 2px}
-.imcol{display:flex;flex-direction:column;flex:0 0 auto;min-width:212px;padding:0 9px}
-.imhead{font-size:10.5px;font-weight:700;color:var(--accent);text-transform:uppercase;text-align:center;margin-bottom:6px;letter-spacing:.04em}
+.imcol{display:flex;flex-direction:column;flex:1 1 0;min-width:0;padding:0 7px}
+@media(max-width:760px){.imcol{flex:0 0 148px}}
+.imhead{font-size:10px;font-weight:700;color:var(--accent);text-transform:uppercase;text-align:center;margin-bottom:6px;letter-spacing:.03em}
 .imbody{flex:1;display:flex;flex-direction:column;justify-content:space-around}
 .imwrap{position:relative;flex:1 1 auto;display:flex;align-items:center;padding:7px 0}
-.im{position:relative;background:#fff;border-radius:11px;box-shadow:0 1px 5px rgba(0,0,0,.28);overflow:hidden;width:100%}
-.imrow{display:flex;align-items:center;gap:7px;padding:7px 9px 7px 3px;color:#1a2230;font-size:12.5px}
+.im{position:relative;background:#fff;border-radius:10px;box-shadow:0 1px 5px rgba(0,0,0,.28);overflow:hidden;width:100%}
+.imrow{display:flex;align-items:center;gap:6px;padding:6px 7px 6px 3px;color:#1a2230;font-size:12px}
 .imrow+.imrow{border-top:1px solid #edf0f5}
-.imcc{writing-mode:vertical-rl;transform:rotate(180deg);font-size:8.5px;font-weight:700;color:#9aa3b2;letter-spacing:.03em;align-self:stretch;display:flex;align-items:center;justify-content:center}
-.imn{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500}
+.imcc{writing-mode:vertical-rl;transform:rotate(180deg);font-size:8px;font-weight:700;color:#9aa3b2;letter-spacing:.02em;align-self:stretch;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+.imn{flex:1;min-width:0;white-space:normal;line-height:1.18;word-break:break-word;font-weight:500}
 .imn b{font-weight:800}
 .ims{font-weight:800;color:#1a2230;flex:0 0 auto}
 .imlose .imn{color:#a6adba;text-decoration:line-through}.imlose .ims{color:#a6adba}
 .imwin .imn{color:#0c7b50}
 .imlive{box-shadow:0 0 0 2px var(--accent2),0 1px 5px rgba(0,0,0,.28)}
 .imlivebadge{position:absolute;top:-7px;right:6px;background:var(--accent2);color:#04231a;font-size:8px;font-weight:800;padding:1px 5px;border-radius:10px;z-index:2}
-.imcol:not(:last-child) .imwrap::after{content:"";position:absolute;left:100%;width:9px;height:50%;border-right:2px solid #c7cfdd}
+.imcol:not(:last-child) .imwrap::after{content:"";position:absolute;left:100%;width:7px;height:50%;border-right:2px solid #c7cfdd}
 .imcol:not(:last-child) .imwrap:nth-child(odd)::after{top:50%;border-top:2px solid #c7cfdd}
 .imcol:not(:last-child) .imwrap:nth-child(even)::after{bottom:50%;border-bottom:2px solid #c7cfdd}
-.imcol:not(:first-child) .imwrap::before{content:"";position:absolute;right:100%;width:9px;top:50%;border-top:2px solid #c7cfdd}
+.imcol:not(:first-child) .imwrap::before{content:"";position:absolute;right:100%;width:7px;top:50%;border-top:2px solid #c7cfdd}
 .bcol h4{margin:0 0 8px;font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent);text-align:center;padding-bottom:5px;border-bottom:1px solid var(--line)}
 .bextra h4{color:var(--accent2)}
 .bmatches{flex:1;display:flex;flex-direction:column;justify-content:space-around;gap:9px}
@@ -1627,7 +1683,7 @@ let JCAL={age:"all"};
 function judoPanelHtml(){return `<div class="judopanel">
    <div class="jph"><div><h2>🥋 Canlı nəticələr</h2> <span class="jphs">IJF JudoBase</span></div>
      <div class="vtoggle"><button id="vBr" class="${JUDO.view!=='list'?'von':''}" onclick="judoSetView('bracket')">Cədvəl</button><button id="vLi" class="${JUDO.view==='list'?'von':''}" onclick="judoSetView('list')">Siyahı</button></div></div>
-   <p style="color:var(--muted);margin:8px 0 12px;font-size:13.5px">Yarışı və çəki dərəcəsini seçin — finala qədər şəbəkə (draw) görünür, canlı görüşlər hər 10 dəqiqədən bir yenilənir.</p>
+   <p style="color:var(--muted);margin:8px 0 12px;font-size:13.5px">Yarışı və çəki dərəcəsini seçin — finala qədər püşkatma (draw) görünür, canlı görüşlər hər 10 dəqiqədən bir yenilənir.</p>
    <div class="judosel">
      <select id="judoComp" onchange="judoPickComp()"><option>Yüklənir...</option></select>
      <select id="judoWeight" onchange="judoPickWeight()"><option>—</option></select>
@@ -1657,8 +1713,20 @@ function renderCudo(items){document.getElementById("hero").innerHTML="";
   const news=items.length
     ?`<div class="section-h"><h2>Cüdo xəbərləri</h2></div><div class="grid">${items.map(cardHtml).join("")}</div>`
     :`<div class="empty" style="margin-top:18px">Hələ cüdo xəbəri yoxdur.</div>`;
-  document.getElementById("content").innerHTML=backBtn()+judoPanelHtml()+`<div class="cudolow"><div class="cudonews">${news}</div>${judoCalHtml()}</div>`;
-  judoInit();judoCalLoad();}
+  document.getElementById("content").innerHTML=backBtn()+judoPanelHtml()+wrlHtml()+`<div class="cudolow"><div class="cudonews">${news}</div>${judoCalHtml()}</div>`;
+  judoInit();judoCalLoad();loadWRL();}
+function wrlHtml(){return `<div class="judopanel">
+   <div class="jph"><div><h2>🏅 Dünya Reytinqi</h2> <span class="jphs">IJF WRL · Liderlər</span></div></div>
+   <div class="wrlgrid">
+     <div class="wrlcol"><h4>Kişilər</h4><div id="wrlMen"><div class="loader" style="padding:16px"><div class="spin"></div></div></div></div>
+     <div class="wrlcol"><h4>Qadınlar</h4><div id="wrlWomen"><div class="loader" style="padding:16px"><div class="spin"></div></div></div></div>
+   </div></div>`;}
+function wrlRow(r){return `<div class="wrlrow"><span class="wrlw">${esc(r.weight)} kq</span><span class="wrlnm">${esc(r.name||'—')}</span><span class="wrlc">${flagImg(r.iso,'',r.cc)}<span class="wrlcc">${esc(r.cc)}</span></span><span class="wrlpts">${esc(r.pts)}${r.pts?' xal':''}</span></div>`;}
+async function loadWRL(){const mb=document.getElementById("wrlMen"),wb=document.getElementById("wrlWomen");if(!mb)return;
+  let d={men:[],women:[]};try{d=await (await fetch("/api/judo/ranking")).json();}catch(e){}
+  if(CURRENT!=="Cüdo")return;
+  mb.innerHTML=(d.men&&d.men.length)?d.men.map(wrlRow).join(""):'<p style="color:var(--muted);font-size:13px">Məlumat yoxdur.</p>';
+  if(wb)wb.innerHTML=(d.women&&d.women.length)?d.women.map(wrlRow).join(""):'<p style="color:var(--muted);font-size:13px">Məlumat yoxdur.</p>';}
 async function judoInit(){
   if(!JUDO.comps){try{JUDO.comps=((await (await fetch("/api/judo/competitions")).json()).items)||[];}catch(e){JUDO.comps=[];}}
   const sel=document.getElementById("judoComp");if(!sel)return;
@@ -2042,7 +2110,16 @@ let st;function onSearch(){SEARCH=document.getElementById("q").value;SHOWN=18;cl
 let SHOWN=18;function showMore(){SHOWN+=18;render();}
 window.addEventListener("scroll",()=>{const b=document.getElementById("toTop");if(b)b.classList.toggle("show",window.scrollY>700);});
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){closeModal();closeAdmin();}});
-restoreAdminSession();load().then(openFromHash);window.addEventListener("hashchange",openFromHash);setInterval(load,60000);
+restoreAdminSession();load().then(openFromHash);window.addEventListener("hashchange",openFromHash);
+function silentRefresh(){
+  const mod=document.getElementById("modal"),dash=document.getElementById("dash");
+  if(mod&&mod.classList.contains("open"))return;          // məqalə açıqdırsa toxunma
+  if(dash&&dash.classList.contains("open"))return;        // admin paneli açıqdırsa toxunma
+  if(CURRENT!=="Hamısı")return;                            // yalnız əsas səhifədə yenilə
+  if(SEARCH||window.scrollY>300)return;                    // axtarış/aşağı sürüşdürmə zamanı toxunma
+  load();
+}
+setInterval(silentRefresh,600000);
 if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}
 </script></body></html>"""
 
