@@ -450,9 +450,25 @@ def save_poll():
     except Exception as e:
         print("[save_poll]", e)
 
-def rss_xml():
+def public_live():
+    # Saytda göstərmək üçün: yalnız şəkilli xəbərlər + eyni şəkli işlədən
+    # təkrar/canlı yeniləmələri birləşdir (ən yenisini saxla).
     with _lock:
-        items = (load_manual() + LIVE)[:40]
+        items = sorted(list(LIVE), key=lambda x: x.get("date", ""), reverse=True)
+    out, seen_img = [], set()
+    for it in items:
+        img = (it.get("image") or "").strip()
+        if not img:
+            continue                      # şəkilsiz xəbər saytda görünməsin
+        key = img.split("?")[0]
+        if key in seen_img:
+            continue                      # eyni şəkilli təkrarı at
+        seen_img.add(key)
+        out.append(it)
+    return out
+
+def rss_xml():
+    items = (load_manual() + public_live())[:40]
     parts = ['<?xml version="1.0" encoding="UTF-8"?>',
              '<rss version="2.0"><channel>',
              '<title>İdman24 - Canlı İdman Xəbərləri</title>',
@@ -510,8 +526,7 @@ def article_page(it, body, img):
         '<p style="margin-top:24px"><a href="/">İdman24 əsas səhifə</a></p></article></body></html>')
 
 def sitemap_xml():
-    with _lock:
-        items = (load_manual() + list(LIVE))[:300]
+    items = (load_manual() + public_live())[:300]
     urls = ['<url><loc>https://idman24.com/</loc></url>']
     for it in items:
         urls.append("<url><loc>https://idman24.com/xeber/%s</loc></url>" % html.escape(it.get("id", "")))
@@ -738,6 +753,17 @@ def fetch_all():
                 continue
             seen.add(k); deduped.append(it)
         LIVE = deduped
+        # Eyni şəkli işlədən təkrarları/canlı yeniləmələri sil (ən yenisi qalır)
+        seen_img, deduped = set(), []
+        for it in LIVE:
+            img = (it.get("image") or "").strip()
+            if img:
+                ikey = img.split("?")[0]
+                if ikey in seen_img:
+                    continue
+                seen_img.add(ikey)
+            deduped.append(it)
+        LIVE = deduped
         del LIVE[KEEP_MAX:]
         for it in LIVE:  # mövcud şəkilləri saxla
             e = ENRICH.get(it["link"])
@@ -774,8 +800,7 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/":
             return self._send(200, PAGE, "text/html; charset=utf-8")
         if u.path == "/api/news":
-            with _lock:
-                items = load_manual() + list(LIVE)
+            items = load_manual() + public_live()
             with _slock:
                 for it in items:
                     it["views"] = STATS.get(it["id"], {}).get("views", 0)
