@@ -646,6 +646,14 @@ def _capture_snapshot():
     _rankd["captured"] = now
     save_rankd()
 
+def snapshot_loop():
+    while True:
+        try:
+            _capture_snapshot()
+        except Exception as e:
+            print("[snap]", e)
+        time.sleep(6 * 3600)
+
 def _chg(pid):
     p = _rankd.get("prev", {}).get(str(pid)); c = _rankd.get("cur", {}).get(str(pid))
     if p is None or c is None:
@@ -653,11 +661,16 @@ def _chg(pid):
     return p - c     # müsbət = irəlilədi (yer yuxarı)
 
 def judo_rank(gender, weight, limit):
-    _capture_snapshot()
     rows = []
     if weight in ("leaders", "all"):
-        for w in _genders_weights(gender):
-            for e in _weight_feed(w):
+        ws = _genders_weights(gender)
+        try:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                feeds = dict(zip(ws, pool.map(_weight_feed, ws)))
+        except Exception:
+            feeds = {w: _weight_feed(w) for w in ws}
+        for w in ws:
+            for e in feeds.get(w, []):
                 rows.append({"w": w, "place": int(e.get("place") or 9999),
                              "pid": e.get("id_person"), "pts": int(e.get("sum_points") or 0)})
         if weight == "leaders":
@@ -1418,6 +1431,7 @@ def main():
     print("\n  İdman24 başlayır...")
     if LIVE: print(f"  {len(LIVE)} xəbər keşdən dərhal yükləndi.")
     threading.Thread(target=refresher, daemon=True).start()
+    threading.Thread(target=snapshot_loop, daemon=True).start()
     host = "0.0.0.0" if IS_HOSTED else "127.0.0.1"
     if IS_HOSTED:
         print(f"  Server hostinqdə işləyir, port {PORT}")
