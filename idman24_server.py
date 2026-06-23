@@ -15,8 +15,9 @@ TƏK FAYL, QURAŞDIRMA YOXDUR:
 Sonra brauzer avtomatik açılır: http://127.0.0.1:8000
 """
 
-import os, re, json, html, ssl, time, base64, mimetypes, threading, webbrowser
+import os, re, json, html, ssl, time, base64, mimetypes, threading, webbrowser, smtplib
 import urllib.request
+from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
@@ -31,10 +32,23 @@ IS_HOSTED = bool(os.environ.get("PORT"))   # serverdə işləyirsə True
 ADMIN_PASSWORD = os.environ.get("IDMAN24_ADMIN", "Baku1234")  # <-- parol (hostinqdə dəyişən kimi qoyun)
 REFRESH_MINUTES = 8
 BASE = os.path.dirname(os.path.abspath(__file__))
-CACHE_FILE = os.path.join(BASE, "idman24_cache.json")
-MANUAL_FILE = os.path.join(BASE, "idman24_manual.json")
-UPLOAD_DIR = os.path.join(BASE, "uploads")
-COMMENTS_FILE = os.path.join(BASE, "idman24_comments.json")
+# Daimi məlumat qovluğu: hostinqdə DATA_DIR=/var/data (Persistent Disk) qoyun;
+# lokalda bu fayl qovluğunda saxlanılır. Belə olduqda redeploy-da xəbərlər/şərhlər İTMİR.
+DATA_DIR = os.environ.get("DATA_DIR", BASE)
+try:
+    os.makedirs(DATA_DIR, exist_ok=True)
+except Exception:
+    DATA_DIR = BASE
+CACHE_FILE = os.path.join(DATA_DIR, "idman24_cache.json")
+MANUAL_FILE = os.path.join(DATA_DIR, "idman24_manual.json")
+UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
+COMMENTS_FILE = os.path.join(DATA_DIR, "idman24_comments.json")
+STATS_FILE = os.path.join(DATA_DIR, "idman24_stats.json")
+CONTACTS_FILE = os.path.join(DATA_DIR, "idman24_contacts.json")
+# Əlaqə mesajları üçün e-poçt (hostinqdə dəyişən kimi qoyulur, kodda görünmür):
+GMAIL_USER = os.environ.get("GMAIL_USER", "")            # göndərən gmail
+GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")  # gmail "app password"
+CONTACT_TO = os.environ.get("CONTACT_TO", GMAIL_USER)    # mesajların gedəcəyi ünvan
 
 FEEDS = [
     {"name": "APA Sport",    "url": "https://apasport.az/rss",    "site": "apasport.az", "sport_only": False},
@@ -306,6 +320,63 @@ def save_comments():
     except Exception as e:
         print("[save_comments]", e)
 
+# ---- Statistika (oxunma/paylaşım) — yalnız admin görür ----
+_slock = threading.Lock()
+STATS = {}
+
+def load_stats():
+    global STATS
+    try:
+        if os.path.exists(STATS_FILE):
+            STATS = json.load(open(STATS_FILE, encoding="utf-8")) or {}
+    except Exception as e:
+        print("[load_stats]", e); STATS = {}
+
+def save_stats():
+    try:
+        json.dump(STATS, open(STATS_FILE, "w", encoding="utf-8"), ensure_ascii=False)
+    except Exception as e:
+        print("[save_stats]", e)
+
+# ---- Əlaqə mesajları ----
+_ctlock = threading.Lock()
+CONTACTS = []
+
+def load_contacts():
+    global CONTACTS
+    try:
+        if os.path.exists(CONTACTS_FILE):
+            CONTACTS = json.load(open(CONTACTS_FILE, encoding="utf-8")) or []
+    except Exception as e:
+        print("[load_contacts]", e); CONTACTS = []
+
+def save_contacts():
+    try:
+        json.dump(CONTACTS[-500:], open(CONTACTS_FILE, "w", encoding="utf-8"), ensure_ascii=False)
+    except Exception as e:
+        print("[save_contacts]", e)
+
+def send_contact_email(name, phone, msg, img_bytes=None, ext="jpg"):
+    if not (GMAIL_USER and GMAIL_APP_PASSWORD and CONTACT_TO):
+        return False
+    try:
+        em = EmailMessage()
+        em["From"] = GMAIL_USER
+        em["To"] = CONTACT_TO
+        em["Subject"] = f"İdman24 əlaqə — {name or 'Anonim'}"
+        em.set_content(f"Yeni əlaqə mesajı (idman24.com)\n\nAd: {name or '-'}\n"
+                       f"Telefon: {phone or '-'}\n\nMesaj:\n{msg or '-'}")
+        if img_bytes:
+            sub = ext.lower().replace("jpg", "jpeg")
+            em.add_attachment(img_bytes, maintype="image", subtype=sub, filename=f"foto.{ext}")
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx, timeout=15) as s:
+            s.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+            s.send_message(em)
+        return True
+    except Exception as e:
+        print("[email]", e); return False
+
 # ============================ ZƏNGİNLƏŞDİRMƏ (şəkil + mətn) ============================
 def og_image(h):
     for pat in [r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)',
@@ -534,6 +605,58 @@ class H(BaseHTTPRequestHandler):
                 COMMENTS[aid] = COMMENTS[aid][-300:]
                 save_comments()
             return self._send(200, {"ok": True})
+        if u.path == "/api/track":
+            aid = (body.get("id") or "").strip()
+            typ = body.get("type")
+            if aid and typ in ("view", "share"):
+                with _slock:
+                    s = STATS.setdefault(aid, {"views": 0, "shares": 0, "title": ""})
+                    if body.get("title"):
+                        s["title"] = (body.get("title") or "")[:160]
+                    s["views" if typ == "view" else "shares"] += 1
+                    save_stats()
+            return self._send(200, {"ok": True})
+        if u.path == "/api/stats":
+            if body.get("password") != ADMIN_PASSWORD:
+                return self._send(401, {"ok": False, "error": "Parol yanlışdır"})
+            with _slock:
+                items = [{"id": k, "title": v.get("title", ""),
+                          "views": v.get("views", 0), "shares": v.get("shares", 0)}
+                         for k, v in STATS.items()]
+            items.sort(key=lambda x: x["views"], reverse=True)
+            return self._send(200, {"ok": True,
+                "totalViews": sum(i["views"] for i in items),
+                "totalShares": sum(i["shares"] for i in items),
+                "items": items[:100]})
+        if u.path == "/api/contact":
+            name = (body.get("name") or "").strip()[:80]
+            phone = (body.get("phone") or "").strip()[:40]
+            msg = (body.get("message") or "").strip()[:3000]
+            if not (phone or msg):
+                return self._send(400, {"ok": False, "error": "Mesaj və ya nömrə yazın"})
+            du = body.get("image_data") or ""
+            img_path = self._save_image(du)
+            rec = {"name": name, "phone": phone, "message": msg, "image": img_path,
+                   "date": datetime.now(timezone.utc).isoformat()}
+            with _ctlock:
+                CONTACTS.append(rec); save_contacts()
+            img_bytes, ext = None, "jpg"
+            if du.startswith("data:"):
+                try:
+                    hdr, b64 = du.split(",", 1)
+                    mm = re.search(r"data:image/([\w.+-]+)", hdr)
+                    ext = (mm.group(1) if mm else "jpg").replace("jpeg", "jpg")
+                    img_bytes = base64.b64decode(b64)
+                except Exception:
+                    img_bytes = None
+            threading.Thread(target=send_contact_email,
+                             args=(name, phone, msg, img_bytes, ext), daemon=True).start()
+            return self._send(200, {"ok": True})
+        if u.path == "/api/contacts":
+            if body.get("password") != ADMIN_PASSWORD:
+                return self._send(401, {"ok": False, "error": "Parol yanlışdır"})
+            with _ctlock:
+                return self._send(200, {"ok": True, "items": list(reversed(CONTACTS))[:200]})
         if u.path == "/api/login":
             return self._send(200, {"ok": body.get("password") == ADMIN_PASSWORD})
         if u.path == "/api/refresh":
@@ -593,6 +716,8 @@ class H(BaseHTTPRequestHandler):
 def main():
     load_cache()
     load_comments()
+    load_stats()
+    load_contacts()
     print("\n  İdman24 başlayır...")
     if LIVE: print(f"  {len(LIVE)} xəbər keşdən dərhal yükləndi.")
     threading.Thread(target=refresher, daemon=True).start()
@@ -684,6 +809,10 @@ main{max-width:1240px;margin:0 auto;padding:24px 20px 60px}
 .cmForm input:focus,.cmForm textarea:focus{border-color:var(--accent)}.cmForm textarea{resize:vertical;min-height:70px}
 .cmForm button{align-self:flex-start;background:var(--accent);color:#04231a;border:none;padding:10px 20px;border-radius:9px;font-weight:700;font-size:14px;cursor:pointer}
 .iz-toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);background:#141d30;border:1px solid var(--accent);color:var(--accent);padding:11px 20px;border-radius:10px;font-size:14px;z-index:200}
+.contactWrap{max-width:560px}
+.ctf{width:100%;background:#0d1525;border:1px solid var(--line);color:var(--txt);padding:12px 14px;border-radius:10px;font-size:14px;outline:none;font-family:inherit;margin-bottom:12px}
+.ctf:focus{border-color:var(--accent)}textarea.ctf{resize:vertical;min-height:120px}
+.ctbtn{background:var(--accent);color:#04231a;border:none;padding:13px 26px;border-radius:10px;font-weight:800;font-size:15px;cursor:pointer;margin-top:4px}
 .modal-close{position:absolute;top:18px;right:22px;font-size:30px;color:#fff;cursor:pointer;z-index:101;background:rgba(0,0,0,.5);width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center}
 label{display:block;font-size:13px;color:var(--muted);margin:14px 0 6px;font-weight:600}
 input.f,textarea.f,select.f{width:100%;background:#0d1525;border:1px solid var(--line);color:var(--txt);padding:12px 14px;border-radius:10px;font-size:14px;outline:none;font-family:inherit}
@@ -724,7 +853,7 @@ async function load(){
   buildTabs();render();buildTicker();
 }
 async function hardRefresh(){document.getElementById("status").textContent="Yenilənir...";await fetch("/api/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});load();}
-function buildTabs(){document.getElementById("tabs").innerHTML=CATS.map(c=>`<button class="tab ${c===CURRENT?'active':''}" onclick="selectCat('${c}')">${c}</button>`).join("");}
+function buildTabs(){document.getElementById("tabs").innerHTML=[...CATS,"Əlaqə"].map(c=>`<button class="tab ${c===CURRENT?'active':''}" onclick="selectCat('${c}')">${c}</button>`).join("");}
 function current(){let i=[...ALL];
   if(CURRENT!=="Hamısı")i=i.filter(x=>x.category===CURRENT);
   if(SEARCH){const q=SEARCH.toLowerCase();i=i.filter(x=>(x.title+" "+x.summary).toLowerCase().includes(q));}return i;}
@@ -732,7 +861,8 @@ function badge(i){return i.manual?`<span class="badge mine">★ REDAKSİYA</span
 function srcLine(i){return `<span class="src-name">${esc(i.source)}</span> · ${fmtTime(i.date)}`;}
 function buildTicker(){const tk=document.querySelector('.ticker');if(SEARCH||CURRENT!=="Hamısı"){tk.style.display='none';return;}
   tk.style.display='block';const t=ALL.slice(0,10).map(i=>`<span>${esc(i.title)}</span>`).join("");document.getElementById("ticker").innerHTML="<b>SON DƏQİQƏ</b>"+t+t;}
-function render(){const items=current(),hero=document.getElementById("hero"),content=document.getElementById("content");
+function render(){if(CURRENT==="Əlaqə"){document.getElementById("hero").innerHTML="";renderContact();return;}
+  const items=current(),hero=document.getElementById("hero"),content=document.getElementById("content");
   if(!items.length){hero.innerHTML="";content.innerHTML=`<div class="empty">Bu kateqoriyada xəbər tapılmadı.</div>`;return;}
   let rest=items;
   if(CURRENT==="Hamısı"&&!SEARCH&&items.length>=4){const[a,b,c]=items;
@@ -770,7 +900,7 @@ function renderModal(a,loading){const text=a.body||a.summary||"";
           </div>
         </div>`}
     </div>`;}
-async function openModal(id){const a=find(id);if(!a)return;CUR=a;const need=!a.manual&&a.link&&(!a.body||!a.image);
+async function openModal(id){const a=find(id);if(!a)return;CUR=a;trackArticle(a,"view");const need=!a.manual&&a.link&&(!a.body||!a.image);
   renderModal(a,need);document.getElementById("modal").classList.add("open");
   if(need){try{const e=await (await fetch("/api/article?url="+encodeURIComponent(a.link))).json();
     if(e.image&&!a.image)a.image=e.image;if(e.body)a.body=e.body;}catch(_){}
@@ -778,7 +908,8 @@ async function openModal(id){const a=find(id);if(!a)return;CUR=a;const need=!a.m
   if(document.getElementById("modal").classList.contains("open"))loadComments(a.id);}
 function closeModal(){document.getElementById("modal").classList.remove("open");}
 function izToast(m){const t=document.createElement("div");t.className="iz-toast";t.textContent=m;document.body.appendChild(t);setTimeout(()=>t.remove(),2200);}
-function shareArticle(){const a=CUR;if(!a)return;const url=a.link||location.href;const title=a.title||"İdman24";
+function trackArticle(a,type){if(!a)return;try{fetch("/api/track",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:a.id,type,title:a.title})});}catch(e){}}
+function shareArticle(){const a=CUR;if(!a)return;trackArticle(a,"share");const url=a.link||location.href;const title=a.title||"İdman24";
   if(navigator.share){navigator.share({title,url}).catch(()=>{});}
   else if(navigator.clipboard){navigator.clipboard.writeText(url).then(()=>izToast("Link kopyalandı ✓")).catch(()=>izToast(url));}
   else izToast(url);}
@@ -792,6 +923,41 @@ async function postComment(){const a=CUR;if(!a)return;const text=document.getEle
   const name=(document.getElementById("cmName").value||"").trim();
   await fetch("/api/comments",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:a.id,name,text})});
   document.getElementById("cmText").value="";loadComments(a.id);izToast("Şərhiniz əlavə olundu ✓");}
+/* ----- Əlaqə (contact) ----- */
+function renderContact(){document.getElementById("content").innerHTML=`
+  <div class="contactWrap">
+    <div class="section-h"><h2>Bizimlə əlaqə</h2></div>
+    <p style="color:var(--muted);margin-bottom:18px">Sual, təklif, məlumat və ya xəbər göndərmək üçün formu doldurun. Cavab almaq üçün əlaqə nömrənizi qeyd edin.</p>
+    <div id="ctMsg" style="display:none;margin-bottom:12px;padding:11px 14px;border-radius:9px;font-size:14px"></div>
+    <input class="ctf" id="ctName" placeholder="Adınız (istəyə bağlı)" maxlength="80">
+    <input class="ctf" id="ctPhone" placeholder="Əlaqə nömrəniz" maxlength="40">
+    <textarea class="ctf" id="ctText" placeholder="Mesajınız..." maxlength="3000"></textarea>
+    <label style="display:block;color:var(--muted);font-size:13px;margin:2px 0 6px">Şəkil əlavə et (istəyə bağlı)</label>
+    <input class="ctf" id="ctImg" type="file" accept="image/*">
+    <button class="ctbtn" onclick="sendContact()">Göndər</button>
+  </div>`;}
+function ctMsg(t,ok){const m=document.getElementById("ctMsg");if(!m)return;m.style.display="block";m.textContent=t;
+  m.style.background=ok?"rgba(0,230,168,.15)":"rgba(255,61,113,.15)";m.style.color=ok?"var(--accent)":"var(--accent2)";}
+async function sendContact(){const phone=document.getElementById("ctPhone").value.trim();const text=document.getElementById("ctText").value.trim();
+  if(!phone&&!text){ctMsg("Zəhmət olmasa mesaj və ya nömrə yazın.",false);return;}
+  const fileEl=document.getElementById("ctImg");let image_data="";
+  if(fileEl.files&&fileEl.files[0]){if(fileEl.files[0].size>5*1024*1024){ctMsg("Şəkil 5MB-dan kiçik olmalıdır.",false);return;}
+    ctMsg("Göndərilir...",true);
+    image_data=await new Promise(r=>{const fr=new FileReader();fr.onload=()=>r(fr.result);fr.readAsDataURL(fileEl.files[0]);});}
+  const name=document.getElementById("ctName").value.trim();
+  try{const r=await (await fetch("/api/contact",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,phone,message:text,image_data})})).json();
+    if(r.ok){ctMsg("✓ Mesajınız göndərildi. Təşəkkürlər!",true);["ctName","ctPhone","ctText","ctImg"].forEach(i=>document.getElementById(i).value="");}
+    else ctMsg(r.error||"Xəta baş verdi.",false);}catch(e){ctMsg("Xəta baş verdi.",false);}}
+async function loadContacts(){const box=document.getElementById("ctInbox");if(!box)return;
+  try{const d=await (await fetch("/api/contacts",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:PW})})).json();
+    if(!d.ok){box.innerHTML="Yüklənmədi.";return;}const list=d.items||[];
+    box.innerHTML=list.length?list.map(m=>`<div style="background:#0d1525;border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center"><b style="color:var(--accent)">${esc(m.name||"Anonim")}</b><small style="color:var(--muted)">${fmtTime(m.date)}</small></div>
+      ${m.phone?`<div style="color:var(--gold);font-size:13px;margin:3px 0">📞 ${esc(m.phone)}</div>`:""}
+      ${m.message?`<p style="color:#c5d3ec;font-size:14px;margin:6px 0;white-space:pre-wrap">${esc(m.message)}</p>`:""}
+      ${m.image?`<a href="${esc(m.image)}" target="_blank" rel="noopener"><img src="${esc(m.image)}" style="max-width:200px;border-radius:8px;margin-top:6px"></a>`:""}
+    </div>`).join(""):`<p style="color:var(--muted)">Hələ mesaj yoxdur.</p>`;
+  }catch(e){box.innerHTML="Yüklənmədi.";}}
 /* ----- admin (parol qorumalı) ----- */
 function openAdmin(){document.getElementById("adminModal").classList.add("open");PW?adminForm():adminLogin();}
 function closeAdmin(){document.getElementById("adminModal").classList.remove("open");}
@@ -818,8 +984,28 @@ function adminForm(){EDIT_ID=null;const opts=CATS.filter(c=>c!=="Hamısı").map(
   <label>Tam mətn</label><textarea class="f" id="aBody"></textarea>
   <label>Mənbə linki (istəyə bağlı)</label><input class="f" id="aLink" placeholder="https://...">
   <button class="btn" id="aSubmit" onclick="saveArticle()">Xəbəri yayımla</button>
-  <h3 style="margin:26px 0 4px;font-size:16px">Əlavə etdiyim xəbərlər</h3><div class="mylist" id="myList"></div></div>`;
-  renderMyList();}
+  <h3 style="margin:26px 0 4px;font-size:16px">Əlavə etdiyim xəbərlər</h3><div class="mylist" id="myList"></div>
+  <h3 style="margin:26px 0 6px;font-size:16px">📊 Statistika <span style="color:var(--muted);font-size:12px;font-weight:400">(yalnız siz görürsünüz)</span></h3>
+  <div id="statsBox" style="font-size:13px;color:var(--muted)">Yüklənir...</div>
+  <h3 style="margin:26px 0 6px;font-size:16px">📩 Gələn əlaqə mesajları</h3>
+  <div id="ctInbox" style="font-size:13px;color:var(--muted)">Yüklənir...</div></div>`;
+  renderMyList();loadStats();loadContacts();}
+async function loadStats(){const box=document.getElementById("statsBox");if(!box)return;
+  try{const d=await (await fetch("/api/stats",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:PW})})).json();
+    if(!d.ok){box.innerHTML="Statistika yüklənmədi.";return;}
+    const list=(d.items||[]).filter(i=>i.views||i.shares).slice(0,30);
+    const rows=list.map(i=>`<tr><td style="padding:7px 8px;border-bottom:1px solid var(--line)">${esc(i.title||i.id)}</td>
+      <td style="text-align:center;padding:7px 8px;border-bottom:1px solid var(--line);color:var(--accent);font-weight:700">${i.views}</td>
+      <td style="text-align:center;padding:7px 8px;border-bottom:1px solid var(--line);color:var(--gold);font-weight:700">${i.shares}</td></tr>`).join("");
+    box.innerHTML=`<div style="display:flex;gap:12px;margin-bottom:14px">
+      <div style="flex:1;background:#0d1525;border:1px solid var(--line);border-radius:10px;padding:12px"><div style="color:var(--muted);font-size:12px">Ümumi oxunma</div><div style="font-size:24px;font-weight:800;color:var(--accent)">${d.totalViews}</div></div>
+      <div style="flex:1;background:#0d1525;border:1px solid var(--line);border-radius:10px;padding:12px"><div style="color:var(--muted);font-size:12px">Ümumi paylaşım</div><div style="font-size:24px;font-weight:800;color:var(--gold)">${d.totalShares}</div></div></div>
+      ${rows?`<table style="width:100%;border-collapse:collapse;color:var(--txt)"><thead><tr>
+        <th style="text-align:left;padding:7px 8px;color:var(--muted);font-size:12px">Xəbər</th>
+        <th style="padding:7px 8px;color:var(--muted);font-size:12px">Oxunma</th>
+        <th style="padding:7px 8px;color:var(--muted);font-size:12px">Paylaşım</th></tr></thead><tbody>${rows}</tbody></table>`
+       :`<p style="color:var(--muted)">Hələ oxunma/paylaşım qeydə alınmayıb.</p>`}`;
+  }catch(e){box.innerHTML="Statistika yüklənmədi.";}}
 function editArticle(id){const a=ALL.find(x=>x.id===id);if(!a)return;EDIT_ID=id;
   document.getElementById("aTitle").value=a.title||"";
   document.getElementById("aCat").value=a.category||"Digər";
