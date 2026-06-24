@@ -622,10 +622,27 @@ def _weight_feed(w):
     d = ijf_get({"action": "ranking.get_list", "id_weight": w}, 12 * 3600)
     return (d.get("feed") if isinstance(d, dict) else []) or []
 
+NAMES_FILE = os.path.join(DATA_DIR, "idman24_names.json")
+_names = {}
+
+def load_names():
+    global _names
+    try:
+        if os.path.exists(NAMES_FILE):
+            _names = json.load(open(NAMES_FILE, encoding="utf-8")) or {}
+    except Exception as e:
+        print("[load_names]", e)
+
 def _resolve_name(pid):
+    sp = str(pid)
+    if sp in _names:
+        return _names[sp]
     info = ijf_get({"action": "competitor.info", "id_person": pid}, 7 * 24 * 3600) or {}
     cc = info.get("country_short") or ""
-    return {"name": info.get("family_name") or "", "cc": cc, "iso": _iso2(cc)}
+    r = {"name": info.get("family_name") or "", "cc": cc, "iso": _iso2(cc)}
+    if r["name"]:
+        _names[sp] = r
+    return r
 
 def _genders_weights(g):
     return [a for a, _, gg in _WCATS if gg == g]
@@ -747,12 +764,22 @@ def judo_athlete(pid):
     return data
 
 # Tam reytinqi arxa planda hazırla (hər çəkidə top 7) — istifadəçi gözləməsin
+WRL_FILE = os.path.join(DATA_DIR, "idman24_wrl.json")
 _wrl_cache = {"ts": 0, "data": None}
+
+def load_wrl_disk():
+    try:
+        if os.path.exists(WRL_FILE):
+            d = json.load(open(WRL_FILE, encoding="utf-8"))
+            if d and d.get("data"):
+                _wrl_cache["data"] = d["data"]; _wrl_cache["ts"] = d.get("ts", 0)
+    except Exception as e:
+        print("[load_wrl]", e)
 
 def build_wrl():
     ws = [w for w, _, _ in _WCATS]
     try:
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=7) as pool:
             feeds = dict(zip(ws, pool.map(_weight_feed, ws)))
     except Exception:
         feeds = {w: _weight_feed(w) for w in ws}
@@ -762,17 +789,18 @@ def build_wrl():
         plan.append((label, g, feed))
         for e in feed:
             pids.add(e.get("id_person"))
-    pids = [p for p in pids if p]
-    try:
-        with ThreadPoolExecutor(max_workers=16) as pool:
-            infos = dict(zip(pids, pool.map(_resolve_name, pids)))
-    except Exception as e:
-        print("[wrl-names]", e); infos = {}
+    pids = [p for p in pids if p and str(p) not in _names]
+    if pids:
+        try:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                list(pool.map(_resolve_name, pids))   # _names lüğətini doldurur
+        except Exception as e:
+            print("[wrl-names]", e)
     men, women = [], []
     for label, g, feed in plan:
         rows = []
         for e in feed:
-            pid = e.get("id_person"); info = infos.get(pid) or {}
+            pid = e.get("id_person"); info = _names.get(str(pid)) or {}
             rows.append({"place": int(e.get("place") or 0), "name": info.get("name", ""),
                          "cc": info.get("cc", ""), "iso": info.get("iso", ""),
                          "pts": int(e.get("sum_points") or 0), "chg": _chg(pid), "pid": pid})
@@ -780,6 +808,11 @@ def build_wrl():
     data = {"men": men, "women": women}
     if any(b["rows"] for b in men):
         _wrl_cache["ts"] = time.time(); _wrl_cache["data"] = data
+        try:
+            json.dump({"ts": _wrl_cache["ts"], "data": data}, open(WRL_FILE, "w", encoding="utf-8"))
+            json.dump(_names, open(NAMES_FILE, "w", encoding="utf-8"))
+        except Exception as e:
+            print("[save_wrl]", e)
     return data
 
 def wrl_loop():
@@ -1467,6 +1500,8 @@ def main():
     load_ad()
     load_poll()
     load_rankd()
+    load_names()
+    load_wrl_disk()
     print("\n  İdman24 başlayır...")
     if LIVE: print(f"  {len(LIVE)} xəbər keşdən dərhal yükləndi.")
     threading.Thread(target=refresher, daemon=True).start()
