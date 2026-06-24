@@ -785,14 +785,15 @@ def build_wrl():
         feeds = {w: _weight_feed(w) for w in ws}
     plan, pids = [], set()
     for w, label, g in _WCATS:
-        feed = sorted(feeds.get(w, []), key=lambda e: int(e.get("place") or 9999))[:7]
+        n = 7 if g == "m" else 5
+        feed = sorted(feeds.get(w, []), key=lambda e: int(e.get("place") or 9999))[:n]
         plan.append((label, g, feed))
         for e in feed:
             pids.add(e.get("id_person"))
     pids = [p for p in pids if p and str(p) not in _names]
     if pids:
         try:
-            with ThreadPoolExecutor(max_workers=8) as pool:
+            with ThreadPoolExecutor(max_workers=6) as pool:
                 list(pool.map(_resolve_name, pids))   # _names lüğətini doldurur
         except Exception as e:
             print("[wrl-names]", e)
@@ -814,6 +815,24 @@ def build_wrl():
         except Exception as e:
             print("[save_wrl]", e)
     return data
+
+_wrl_building = False
+
+def ensure_wrl():
+    # İlk sorğuda reytinqi arxa planda qurmağa başla (fon thread işləməsə belə)
+    global _wrl_building
+    if _wrl_cache.get("data") or _wrl_building:
+        return
+    _wrl_building = True
+    def run():
+        global _wrl_building
+        try:
+            build_wrl(); _capture_snapshot()
+        except Exception as e:
+            print("[wrl-ondemand]", e)
+        finally:
+            _wrl_building = False
+    threading.Thread(target=run, daemon=True).start()
 
 def wrl_loop():
     while True:
@@ -1199,6 +1218,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": judo_calendar(age)})
         if u.path == "/api/judo/ranking":
             d = _wrl_cache["data"]
+            if not d:
+                ensure_wrl()
             return self._send(200, d if d else {"loading": True})
         if u.path == "/api/judo/athlete":
             pid = parse_qs(u.query).get("id", [""])[0]
@@ -1953,12 +1974,10 @@ function renderWRL(){const box=document.getElementById("wrlBox");if(!box||!WRLDA
   box.innerHTML=blocks.length?blocks.map(wrlBlock).join(""):'<p style="color:var(--muted);font-size:13px">Məlumat yoxdur.</p>';}
 function wrlPickGender(g){WRLG=g;document.querySelectorAll('[data-wg]').forEach(b=>b.classList.toggle('on',b.dataset.wg===g));renderWRL();}
 async function loadWRL(){const box=document.getElementById("wrlBox");if(!box)return;
-  if(!WRLDATA){let d={};try{d=await (await fetch("/api/judo/ranking")).json();}catch(e){}
-    if(CURRENT!=="Cüdo")return;
-    if(d&&d.loading){box.innerHTML='<p style="color:var(--muted);font-size:13px">Reytinq hazırlanır, bir az gözləyin...</p>';setTimeout(()=>{if(CURRENT==="Cüdo")loadWRL();},15000);return;}
-    WRLDATA=d;}
+  let d={};try{d=await (await fetch("/api/judo/ranking")).json();}catch(e){}
   if(CURRENT!=="Cüdo")return;
-  renderWRL();}
+  if(!d||d.loading||!(d.men&&d.men.length)){box.innerHTML='<p style="color:var(--muted);font-size:13px">Reytinq hazırlanır, bir az gözləyin...</p>';setTimeout(()=>{if(CURRENT==="Cüdo")loadWRL();},10000);return;}
+  WRLDATA=d;renderWRL();}
 async function openAthlete(pid){const mb=document.getElementById("modalBox");document.getElementById("modal").classList.add("open");
   mb.innerHTML='<div class="loader" style="padding:48px"><div class="spin"></div></div>';
   let a={};try{a=await (await fetch("/api/judo/athlete?id="+encodeURIComponent(pid))).json();}catch(e){}
