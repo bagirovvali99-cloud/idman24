@@ -481,7 +481,7 @@ def _iso2(short):
 IJF_BASE = "https://data.ijf.org/api/get_json"
 _ijf_cache = {}   # key -> (ts, data)
 
-def ijf_get(params, ttl):
+def ijf_get(params, ttl, timeout=25):
     key = "&".join("%s=%s" % (k, v) for k, v in sorted(params.items()))
     now = time.time()
     hit = _ijf_cache.get(key)
@@ -489,7 +489,7 @@ def ijf_get(params, ttl):
         return hit[1]
     q = "&".join("params%5B" + k + "%5D=" + quote(str(v)) for k, v in params.items())
     try:
-        data = json.loads(http_get(IJF_BASE + "?" + q, timeout=25))
+        data = json.loads(http_get(IJF_BASE + "?" + q, timeout=timeout))
     except Exception as e:
         print("[ijf]", e)
         return hit[1] if hit else None
@@ -619,7 +619,7 @@ def save_rankd():
         print("[save_rankd]", e)
 
 def _weight_feed(w):
-    d = ijf_get({"action": "ranking.get_list", "id_weight": w}, 12 * 3600)
+    d = ijf_get({"action": "ranking.get_list", "id_weight": w}, 12 * 3600, timeout=12)
     return (d.get("feed") if isinstance(d, dict) else []) or []
 
 NAMES_FILE = os.path.join(DATA_DIR, "idman24_names.json")
@@ -637,7 +637,7 @@ def _resolve_name(pid):
     sp = str(pid)
     if sp in _names:
         return _names[sp]
-    info = ijf_get({"action": "competitor.info", "id_person": pid}, 7 * 24 * 3600) or {}
+    info = ijf_get({"action": "competitor.info", "id_person": pid}, 7 * 24 * 3600, timeout=12) or {}
     cc = info.get("country_short") or ""
     r = {"name": info.get("family_name") or "", "cc": cc, "iso": _iso2(cc)}
     if r["name"]:
@@ -818,11 +818,12 @@ def build_wrl():
 def wrl_loop():
     while True:
         try:
-            _capture_snapshot()
-            build_wrl()
+            build_wrl()           # əvvəlcə reytinqi qur (tez görünsün)
+            _capture_snapshot()   # sonra dəyişmə üçün snapshot (feed-lər artıq keşdə)
         except Exception as e:
             print("[wrl]", e)
-        time.sleep(12 * 3600)
+        # Məlumat hazır olana qədər tez-tez yenidən cəhd et, sonra 12 saatda bir
+        time.sleep(12 * 3600 if _wrl_cache.get("data") else 60)
 
 def public_live():
     # Saytda göstərmək üçün: yalnız şəkilli xəbərlər + eyni şəkli işlədən
