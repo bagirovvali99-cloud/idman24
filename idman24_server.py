@@ -1470,6 +1470,7 @@ def main():
     print("\n  İdman24 başlayır...")
     if LIVE: print(f"  {len(LIVE)} xəbər keşdən dərhal yükləndi.")
     threading.Thread(target=refresher, daemon=True).start()
+    threading.Thread(target=wrl_loop, daemon=True).start()
     host = "0.0.0.0" if IS_HOSTED else "127.0.0.1"
     if IS_HOSTED:
         print(f"  Server hostinqdə işləyir, port {PORT}")
@@ -1620,6 +1621,9 @@ main{max-width:1240px;margin:0 auto;padding:24px 20px 60px}
 .wrlgrid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
 @media(max-width:760px){.wrlgrid{grid-template-columns:1fr}}
 .wrlcol>h4{margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent)}
+#wrlBox{max-height:520px;overflow-y:auto;padding-right:4px}
+#wrlBox::-webkit-scrollbar{width:7px}#wrlBox::-webkit-scrollbar-thumb{background:var(--line);border-radius:6px}
+.cudoside{display:flex;flex-direction:column}
 .wrlblk{margin-bottom:14px}
 .wrlbh{font-size:11px;font-weight:800;color:var(--txt);background:#0d1525;border:1px solid var(--line);border-radius:7px;padding:5px 10px;margin-bottom:4px;display:inline-block}
 .wrlsel{background:#0d1525;border:1px solid var(--line);color:var(--txt);padding:5px 8px;border-radius:8px;font-size:12.5px}
@@ -1895,23 +1899,30 @@ function renderCudo(items){document.getElementById("hero").innerHTML="";
   const news=items.length
     ?`<div class="section-h"><h2>Cüdo xəbərləri</h2></div><div class="grid">${items.map(cardHtml).join("")}</div>`
     :`<div class="empty" style="margin-top:18px">Hələ cüdo xəbəri yoxdur.</div>`;
-  document.getElementById("content").innerHTML=backBtn()+judoPanelHtml()+`<div class="cudolow"><div class="cudonews">${news}</div>${judoCalHtml()}</div>`;
-  judoInit();judoCalLoad();}
-function wrlHtml(){return `<div class="judopanel">
-   <div class="jph"><div><h2>🏅 Dünya Reytinqi</h2> <span class="jphs">IJF WRL · hər çəkidə Top 7</span></div></div>
-   <div class="wrlgrid">
-     <div class="wrlcol"><h4>Kişilər</h4><div id="wrlMen"><div class="loader" style="padding:14px"><div class="spin"></div></div></div></div>
-     <div class="wrlcol"><h4>Qadınlar</h4><div id="wrlWomen"><div class="loader" style="padding:14px"><div class="spin"></div></div></div></div>
-   </div></div>`;}
+  document.getElementById("content").innerHTML=backBtn()+judoPanelHtml()+`<div class="cudolow"><div class="cudonews">${news}</div><div class="cudoside">${judoCalHtml()}${wrlHtml()}</div></div>`;
+  judoInit();judoCalLoad();loadWRL();}
+let WRLG="m",WRLDATA=null;
+function wrlHtml(){return `<div class="judopanel calpanel">
+   <div class="jph"><h2>🏅 Dünya Reytinqi</h2><span class="jphs">IJF WRL</span></div>
+   <div class="agefilter">
+     <button class="agebtn on" data-wg="m" onclick="wrlPickGender('m')">Kişilər</button>
+     <button class="agebtn" data-wg="f" onclick="wrlPickGender('f')">Qadınlar</button>
+   </div>
+   <div id="wrlBox" style="margin-top:14px"><div class="loader" style="padding:18px"><div class="spin"></div></div></div></div>`;}
 function wrlChg(n){return n>0?`<span class="rup">▲${n}</span>`:(n<0?`<span class="rdn">▼${-n}</span>`:`<span class="rsame">–</span>`);}
-function wrlRow(r){return `<div class="wrlrow" onclick="openAthlete('${esc(String(r.pid))}')"><span class="wrlw">#${r.place}</span><span class="wrlnm">${esc(r.name||'—')}</span><span class="wrlc">${flagImg(r.iso,'',r.cc)}<span class="wrlcc">${esc(r.cc)}</span></span><span class="wrlpts">${esc(r.pts)}</span><span class="wrlchg">${wrlChg(r.chg||0)}</span></div>`;}
+function wrlRow(r){return `<div class="wrlrow" onclick="openAthlete('${esc(String(r.pid))}')"><span class="wrlw">${r.place}</span><span class="wrlnm">${esc(r.name||'—')}</span><span class="wrlc">${flagImg(r.iso,'',r.cc)}<span class="wrlcc">${esc(r.cc)}</span></span><span class="wrlpts">${esc(r.pts)}</span><span class="wrlchg">${wrlChg(r.chg||0)}</span></div>`;}
 function wrlBlock(b){return `<div class="wrlblk"><div class="wrlbh">${esc(b.weight)} kq</div>${b.rows.map(wrlRow).join("")}</div>`;}
-async function loadWRL(){const mb=document.getElementById("wrlMen"),wb=document.getElementById("wrlWomen");if(!mb)return;
-  let d={};try{d=await (await fetch("/api/judo/ranking")).json();}catch(e){}
+function renderWRL(){const box=document.getElementById("wrlBox");if(!box||!WRLDATA)return;
+  const blocks=(WRLG==="m"?WRLDATA.men:WRLDATA.women)||[];
+  box.innerHTML=blocks.length?blocks.map(wrlBlock).join(""):'<p style="color:var(--muted);font-size:13px">Məlumat yoxdur.</p>';}
+function wrlPickGender(g){WRLG=g;document.querySelectorAll('[data-wg]').forEach(b=>b.classList.toggle('on',b.dataset.wg===g));renderWRL();}
+async function loadWRL(){const box=document.getElementById("wrlBox");if(!box)return;
+  if(!WRLDATA){let d={};try{d=await (await fetch("/api/judo/ranking")).json();}catch(e){}
+    if(CURRENT!=="Cüdo")return;
+    if(d&&d.loading){box.innerHTML='<p style="color:var(--muted);font-size:13px">Reytinq hazırlanır, bir az gözləyin...</p>';setTimeout(()=>{if(CURRENT==="Cüdo")loadWRL();},15000);return;}
+    WRLDATA=d;}
   if(CURRENT!=="Cüdo")return;
-  if(d&&d.loading){mb.innerHTML='<p style="color:var(--muted);font-size:13px">Reytinq hazırlanır, bir az gözləyin...</p>';if(wb)wb.innerHTML="";setTimeout(()=>{if(CURRENT==="Cüdo")loadWRL();},15000);return;}
-  mb.innerHTML=(d.men&&d.men.length)?d.men.map(wrlBlock).join(""):'<p style="color:var(--muted);font-size:13px">Məlumat yoxdur.</p>';
-  if(wb)wb.innerHTML=(d.women&&d.women.length)?d.women.map(wrlBlock).join(""):'<p style="color:var(--muted);font-size:13px">Məlumat yoxdur.</p>';}
+  renderWRL();}
 async function openAthlete(pid){const mb=document.getElementById("modalBox");document.getElementById("modal").classList.add("open");
   mb.innerHTML='<div class="loader" style="padding:48px"><div class="spin"></div></div>';
   let a={};try{a=await (await fetch("/api/judo/athlete?id="+encodeURIComponent(pid))).json();}catch(e){}
