@@ -644,6 +644,48 @@ def _resolve_name(pid):
         _names[sp] = r
     return r
 
+# Sadə, işlək versiya: hər çəkidə lider (1-ci yer), sorğu zamanı qurulur və keşlənir
+_rk_cache = {"ts": 0, "data": None}
+
+def judo_ranking():
+    now = time.time()
+    if _rk_cache["data"] and now - _rk_cache["ts"] < 6 * 3600:
+        return _rk_cache["data"]
+    ws = [w for w, _, _ in _WCATS]
+    try:
+        with ThreadPoolExecutor(max_workers=7) as pool:
+            feeds = dict(zip(ws, pool.map(_weight_feed, ws)))
+    except Exception:
+        feeds = {w: _weight_feed(w) for w in ws}
+    leaders = []
+    for w, label, g in _WCATS:
+        feed = feeds.get(w) or []
+        if not feed:
+            continue
+        top = min(feed, key=lambda e: int(e.get("place") or 9999))
+        leaders.append((label, g, top.get("id_person"), top.get("sum_points")))
+    need = [p for (_, _, p, _) in leaders if p and str(p) not in _names]
+    if need:
+        try:
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                list(pool.map(_resolve_name, need))
+        except Exception as e:
+            print("[ranking]", e)
+    men, women = [], []
+    for label, g, pid, pts in leaders:
+        info = _names.get(str(pid)) or {}
+        row = {"weight": label, "name": info.get("name", ""), "cc": info.get("cc", ""),
+               "iso": info.get("iso", ""), "pts": pts, "pid": pid}
+        (men if g == "m" else women).append(row)
+    data = {"men": men, "women": women}
+    if men:
+        _rk_cache["ts"] = now; _rk_cache["data"] = data
+        try:
+            json.dump(_names, open(NAMES_FILE, "w", encoding="utf-8"))
+        except Exception:
+            pass
+    return data
+
 def _genders_weights(g):
     return [a for a, _, gg in _WCATS if gg == g]
 
@@ -1217,10 +1259,7 @@ class H(BaseHTTPRequestHandler):
             age = parse_qs(u.query).get("age", ["all"])[0]
             return self._send(200, {"items": judo_calendar(age)})
         if u.path == "/api/judo/ranking":
-            d = _wrl_cache["data"]
-            if not d:
-                ensure_wrl()
-            return self._send(200, d if d else {"loading": True})
+            return self._send(200, judo_ranking())
         if u.path == "/api/judo/athlete":
             pid = parse_qs(u.query).get("id", [""])[0]
             return self._send(200, judo_athlete(pid) if pid else {})
@@ -1527,7 +1566,6 @@ def main():
     print("\n  İdman24 başlayır...")
     if LIVE: print(f"  {len(LIVE)} xəbər keşdən dərhal yükləndi.")
     threading.Thread(target=refresher, daemon=True).start()
-    threading.Thread(target=wrl_loop, daemon=True).start()
     host = "0.0.0.0" if IS_HOSTED else "127.0.0.1"
     if IS_HOSTED:
         print(f"  Server hostinqdə işləyir, port {PORT}")
@@ -1966,17 +2004,15 @@ function wrlHtml(){return `<div class="judopanel calpanel">
      <button class="agebtn" data-wg="f" onclick="wrlPickGender('f')">Qadınlar</button>
    </div>
    <div id="wrlBox" style="margin-top:14px"><div class="loader" style="padding:18px"><div class="spin"></div></div></div></div>`;}
-function wrlChg(n){return n>0?`<span class="rup">▲${n}</span>`:(n<0?`<span class="rdn">▼${-n}</span>`:`<span class="rsame">–</span>`);}
-function wrlRow(r){return `<div class="wrlrow" onclick="openAthlete('${esc(String(r.pid))}')"><span class="wrlw">${r.place}</span><span class="wrlnm">${esc(r.name||'—')}</span><span class="wrlc">${flagImg(r.iso,'',r.cc)}<span class="wrlcc">${esc(r.cc)}</span></span><span class="wrlpts">${esc(r.pts)}</span><span class="wrlchg">${wrlChg(r.chg||0)}</span></div>`;}
-function wrlBlock(b){return `<div class="wrlblk"><div class="wrlbh">${esc(b.weight)} kq</div>${b.rows.map(wrlRow).join("")}</div>`;}
+function wrlRow(r){return `<div class="wrlrow" onclick="openAthlete('${esc(String(r.pid))}')"><span class="wrlw">${esc(r.weight)} kq</span><span class="wrlnm">${esc(r.name||'—')}</span><span class="wrlc">${flagImg(r.iso,'',r.cc)}<span class="wrlcc">${esc(r.cc)}</span></span><span class="wrlpts">${esc(r.pts)}</span></div>`;}
 function renderWRL(){const box=document.getElementById("wrlBox");if(!box||!WRLDATA)return;
-  const blocks=(WRLG==="m"?WRLDATA.men:WRLDATA.women)||[];
-  box.innerHTML=blocks.length?blocks.map(wrlBlock).join(""):'<p style="color:var(--muted);font-size:13px">Məlumat yoxdur.</p>';}
+  const rows=(WRLG==="m"?WRLDATA.men:WRLDATA.women)||[];
+  box.innerHTML=rows.length?rows.map(wrlRow).join(""):'<p style="color:var(--muted);font-size:13px">Məlumat yoxdur.</p>';}
 function wrlPickGender(g){WRLG=g;document.querySelectorAll('[data-wg]').forEach(b=>b.classList.toggle('on',b.dataset.wg===g));renderWRL();}
 async function loadWRL(){const box=document.getElementById("wrlBox");if(!box)return;
   let d={};try{d=await (await fetch("/api/judo/ranking")).json();}catch(e){}
   if(CURRENT!=="Cüdo")return;
-  if(!d||d.loading||!(d.men&&d.men.length)){box.innerHTML='<p style="color:var(--muted);font-size:13px">Reytinq hazırlanır, bir az gözləyin...</p>';setTimeout(()=>{if(CURRENT==="Cüdo")loadWRL();},10000);return;}
+  if(!d||!(d.men&&d.men.length)){box.innerHTML='<p style="color:var(--muted);font-size:13px">Reytinq yüklənir...</p>';setTimeout(()=>{if(CURRENT==="Cüdo")loadWRL();},12000);return;}
   WRLDATA=d;renderWRL();}
 async function openAthlete(pid){const mb=document.getElementById("modalBox");document.getElementById("modal").classList.add("open");
   mb.innerHTML='<div class="loader" style="padding:48px"><div class="spin"></div></div>';
